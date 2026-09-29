@@ -19,6 +19,7 @@ captures/
 *.p12
 *.apk
 *.aab
+distribution/
 
 # Local toolchains and OS files
 .jdk17/

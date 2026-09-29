@@ -78,14 +78,19 @@ jobs:
         run: |
           flutter pub get
           flutter build windows --release
-      - name: Prepare Windows ZIP
+      - name: Compile Windows installer
+        shell: pwsh
+        run: ./packaging/build_windows_installer.ps1
+      - name: Prepare Windows distribution
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path distribution/windows | Out-Null
-          $source = 'flutter_app/build/windows/x64/runner/Release'
-          Compress-Archive -Path "$source/*" -DestinationPath distribution/windows/RKAVIC-Team-Manager-Windows-v0.3.0.zip
-          (Get-FileHash distribution/windows/*.zip -Algorithm SHA256).Hash | Set-Content distribution/windows/SHA256.txt
-          'Extract the entire ZIP, then run rkavic_manager.exe. Keep the data folder and DLLs next to the executable. Data is stored locally for your Windows account.' | Set-Content distribution/windows/INSTALL.txt
+          $installer = Get-ChildItem flutter_app/build/installer/RKAVIC-Team-Manager-Windows-v*-Setup.exe | Select-Object -First 1
+          if (!$installer) { throw 'Windows installer was not created.' }
+          Copy-Item -LiteralPath $installer.FullName -Destination distribution/windows/
+          $hash = Get-FileHash -LiteralPath "distribution/windows/$($installer.Name)" -Algorithm SHA256
+          "$($hash.Hash.ToLowerInvariant())  $($installer.Name)" | Set-Content distribution/windows/SHA256SUMS -Encoding ascii
+          'Run the Setup.exe file to install for your Windows account. It creates a Start Menu shortcut and an uninstaller; a desktop shortcut is optional. Team data stays in your user profile across upgrades and uninstall.' | Set-Content distribution/windows/INSTALL.txt
       - uses: actions/upload-artifact@v7
         with:
           name: RKAVIC-Windows-${{ github.run_number }}

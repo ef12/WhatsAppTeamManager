@@ -31,15 +31,22 @@ flutter build apk --debug
 flutter build windows --release
 ```
 
+To create the Windows installer after the release build, install Inno Setup 6 and run:
+
+```powershell
+.\packaging\build_windows_installer.ps1
+```
+
 Build outputs:
 
 - Android: `flutter_app/build/app/outputs/flutter-apk/app-debug.apk`
-- Windows: `flutter_app/build/windows/x64/runner/Release/` (distribute the entire folder)
+- Windows app files: `flutter_app/build/windows/x64/runner/Release/`
+- Windows installer: `flutter_app/build/installer/RKAVIC-Team-Manager-Windows-v0.3.0-Setup.exe`
 
 The Flutter Android debug build uses `app/debug.keystore`. Keep your existing copy to install over an earlier build without deleting data. For a fresh clone, create a debug key at that path using the standard Android debug alias and passwords, or use the manual GitHub workflow to generate one. Signing a production release requires a separate release key and Gradle configuration.
 
 ## Manual distributions from GitHub
 
-In **Actions → Build app distributions → Run workflow**, start the workflow. It uploads an Android debug APK and a Windows ZIP as separate artifacts, each retained for 30 days. Extract the whole Windows ZIP and run `rkavic_manager.exe`. You may need the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) on the destination PC.
+In **Actions → Build app distributions → Run workflow**, start the workflow. It uploads an Android debug APK and a Windows installer as separate artifacts, each retained for 30 days. Give Windows users the `RKAVIC-Team-Manager-Windows-v0.3.0-Setup.exe` file. It installs for the current user without an administrator prompt, adds a Start Menu shortcut, offers an optional desktop shortcut, and can be removed through Windows Installed Apps. Installing a newer version keeps the local database. Uninstall also leaves that database in the user profile, so it can be used again after reinstalling. The installer is currently unsigned; Windows may show an unrecognized app warning. A [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) may be needed on a PC that does not already have it.
 
 To make the GitHub APK update an installed copy, set the Actions secret `DEBUG_KEYSTORE_BASE64` to the Base64 encoding of the existing `app/debug.keystore`. Without it, each workflow run creates a new debug key and its APK is suitable only for a fresh install. Uninstalling Android app data deletes the local database.
