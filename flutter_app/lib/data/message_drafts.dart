@@ -1,11 +1,17 @@
 import 'team_store.dart';
 
-String invitationDraft(TeamMatch match) =>
-    '⚽ ${match.title}\n'
-    '📅 ${match.kickoff}\n'
-    '⏰ Meet: ${match.meet}\n'
-    '📍 ${match.location}\n'
-    'Please confirm attendance by ${match.deadline}. 🙏';
+String _fieldLine(TeamMatch match) =>
+    match.fieldNumber.isEmpty ? '' : 'Field: ${match.fieldNumber}\n';
+
+String invitationDraft(TeamMatch match) {
+  final field = _fieldLine(match);
+  return '⚽ ${match.title}\n'
+      '📅 ${match.kickoff}\n'
+      '⏰ Meet: ${match.meet}\n'
+      '📍 ${match.location}\n'
+      '$field'
+      'Please confirm attendance by ${match.deadline}. 🙏';
+}
 
 String reminderDraft(
   TeamMatch match,
@@ -41,9 +47,12 @@ String dutiesDraft(TeamMatch match, List<Player> players, List<Duty> duties) {
       'If unavailable, please arrange a replacement and inform me.';
 }
 
-String substitutesDraft(TeamMatch match) =>
-    '🚨 Substitute players needed for ${match.title}\n'
-    '📅 ${match.kickoff}\n'
-    '⏰ Meet: ${match.meet}\n'
-    '📍 ${match.location}\n'
-    'Who can help? 🙏⚽';
+String substitutesDraft(TeamMatch match) {
+  final field = _fieldLine(match);
+  return '🚨 Substitute players needed for ${match.title}\n'
+      '📅 ${match.kickoff}\n'
+      '⏰ Meet: ${match.meet}\n'
+      '📍 ${match.location}\n'
+      '$field'
+      'Who can help? 🙏⚽';
+}

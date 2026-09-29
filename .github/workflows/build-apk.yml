@@ -50,7 +50,7 @@ jobs:
           mkdir -p distribution/android
           apk=flutter_app/build/app/outputs/flutter-apk/app-debug.apk
           "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner" verify "$apk"
-          cp "$apk" distribution/android/RKAVIC-Team-Manager-Android-v0.3.0-debug.apk
+          cp "$apk" distribution/android/RKAVIC-Team-Manager-Android-v0.4.0-debug.apk
           cd distribution/android
           sha256sum *.apk > SHA256SUMS
           printf '%s\n' 'Install the APK on Android 8.0 or newer.' 'To update an installed copy and keep its local data, use the same debug signing key.' > INSTALL.txt

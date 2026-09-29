@@ -24,6 +24,7 @@ class TeamMatch {
     this.kickoff,
     this.meet,
     this.location,
+    this.fieldNumber,
     this.deadline,
     this.rkavicScore,
     this.opponentScore,
@@ -35,10 +36,16 @@ class TeamMatch {
   final String kickoff;
   final String meet;
   final String location;
+  final String fieldNumber;
   final String deadline;
   final int? rkavicScore;
   final int? opponentScore;
   final bool done;
+
+  String get venue => [
+    if (location.isNotEmpty) location,
+    if (fieldNumber.isNotEmpty) 'Field $fieldNumber',
+  ].join(' • ');
 
   String get result => rkavicScore == null || opponentScore == null
       ? 'Result not entered'
@@ -50,6 +57,7 @@ class TeamMatch {
     row['date'] as String,
     row['meet'] as String,
     row['location'] as String,
+    row['field_number'] as String,
     row['deadline'] as String,
     row['rkavic_score'] as int?,
     row['opponent_score'] as int?,
@@ -92,10 +100,17 @@ class TeamStore {
       dbPath = path.join(await mobile.getDatabasesPath(), 'team.db');
     }
 
+    return openAt(dbPath, factory);
+  }
+
+  static Future<TeamStore> openAt(
+    String dbPath,
+    DatabaseFactory factory,
+  ) async {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 2,
+        version: 3,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -104,7 +119,8 @@ class TeamStore {
           await db.execute(
             'CREATE TABLE matches(id INTEGER PRIMARY KEY,title TEXT NOT NULL,'
             'date TEXT NOT NULL,meet TEXT NOT NULL,location TEXT NOT NULL,'
-            'deadline TEXT NOT NULL,rkavic_score INTEGER,opponent_score INTEGER,'
+            'field_number TEXT NOT NULL DEFAULT \'\',deadline TEXT NOT NULL,'
+            'rkavic_score INTEGER,opponent_score INTEGER,'
             'done INTEGER NOT NULL DEFAULT 0)',
           );
           await db.execute(
@@ -127,6 +143,11 @@ class TeamStore {
             );
             await db.execute(
               'ALTER TABLE matches ADD COLUMN done INTEGER NOT NULL DEFAULT 0',
+            );
+          }
+          if (oldVersion < 3) {
+            await db.execute(
+              "ALTER TABLE matches ADD COLUMN field_number TEXT NOT NULL DEFAULT ''",
             );
           }
         },
@@ -177,12 +198,14 @@ class TeamStore {
     required String kickoff,
     required String meet,
     required String location,
+    required String fieldNumber,
     required String deadline,
   }) => _db.insert('matches', {
     'title': title,
     'date': kickoff,
     'meet': meet,
     'location': location,
+    'field_number': fieldNumber,
     'deadline': deadline,
   });
 
@@ -192,6 +215,7 @@ class TeamStore {
     required String kickoff,
     required String meet,
     required String location,
+    required String fieldNumber,
     required String deadline,
   }) async {
     await _db.update(
@@ -201,6 +225,7 @@ class TeamStore {
         'date': kickoff,
         'meet': meet,
         'location': location,
+        'field_number': fieldNumber,
         'deadline': deadline,
       },
       where: 'id=?',

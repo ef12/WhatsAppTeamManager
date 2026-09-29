@@ -309,7 +309,7 @@ class _TeamHomeState extends State<TeamHome> {
                   Text(
                     upcoming.isEmpty
                         ? 'Create a match to get started.'
-                        : '${upcoming.first.kickoff}  •  ${upcoming.first.location}',
+                        : '${upcoming.first.kickoff}  •  ${upcoming.first.venue}',
                     style: const TextStyle(color: Color(0xFFD1E0D5)),
                   ),
                 ],
@@ -484,7 +484,7 @@ class _TeamHomeState extends State<TeamHome> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${match.kickoff}  •  ${match.location}',
+                    '${match.kickoff}  •  ${match.venue}',
                     style: const TextStyle(color: Color(0xFF687970)),
                   ),
                 ],
@@ -669,6 +669,7 @@ class _TeamHomeState extends State<TeamHome> {
   Future<void> _editMatch([TeamMatch? match]) async {
     final title = TextEditingController(text: match?.title);
     final location = TextEditingController(text: match?.location);
+    final fieldNumber = TextEditingController(text: match?.fieldNumber);
     DateTime kickoff =
         DateTime.tryParse(match?.kickoff ?? '') ??
         DateTime.now().add(const Duration(days: 7));
@@ -724,6 +725,15 @@ class _TeamHomeState extends State<TeamHome> {
                       decoration: const InputDecoration(labelText: 'Location'),
                     ),
                     const SizedBox(height: 12),
+                    TextFormField(
+                      controller: fieldNumber,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: const InputDecoration(
+                        labelText: 'Field number (optional)',
+                        hintText: 'e.g. 1B2',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
                     _dateTile('Kickoff', kickoff, () async {
                       final value = await pick(context, kickoff);
                       if (value != null) setDialogState(() => kickoff = value);
@@ -761,6 +771,7 @@ class _TeamHomeState extends State<TeamHome> {
         kickoff: dateFormat.format(kickoff),
         meet: dateFormat.format(meet),
         location: location.text.trim(),
+        fieldNumber: fieldNumber.text.trim(),
         deadline: dateFormat.format(deadline),
       );
       if (match == null) {
@@ -769,6 +780,7 @@ class _TeamHomeState extends State<TeamHome> {
           kickoff: args.kickoff,
           meet: args.meet,
           location: args.location,
+          fieldNumber: args.fieldNumber,
           deadline: args.deadline,
         );
         await refresh();
@@ -780,6 +792,7 @@ class _TeamHomeState extends State<TeamHome> {
           kickoff: args.kickoff,
           meet: args.meet,
           location: args.location,
+          fieldNumber: args.fieldNumber,
           deadline: args.deadline,
         );
         await refresh();
@@ -787,6 +800,7 @@ class _TeamHomeState extends State<TeamHome> {
     }
     title.dispose();
     location.dispose();
+    fieldNumber.dispose();
   }
 
   Widget _dateTile(String label, DateTime value, VoidCallback onTap) =>
@@ -930,7 +944,7 @@ class _TeamHomeState extends State<TeamHome> {
           _heading(
             match.done ? 'Completed match' : 'Match day',
             match.title,
-            '${match.kickoff}  •  ${match.location}',
+            '${match.kickoff}  •  ${match.venue}',
           ),
           Wrap(
             spacing: 10,
@@ -969,6 +983,8 @@ class _TeamHomeState extends State<TeamHome> {
             children: [
               _infoCard('KICKOFF', match.kickoff, Icons.event_outlined),
               _infoCard('MEET AT', match.meet, Icons.schedule_outlined),
+              if (match.fieldNumber.isNotEmpty)
+                _infoCard('FIELD', match.fieldNumber, Icons.place_outlined),
               _infoCard(
                 'REPLY BY',
                 match.deadline,
