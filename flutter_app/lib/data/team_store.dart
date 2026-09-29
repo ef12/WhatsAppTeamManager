@@ -47,6 +47,13 @@ class TeamMatch {
     if (fieldNumber.isNotEmpty) 'Field $fieldNumber',
   ].join(' • ');
 
+  Uri? get mapsUri => location.trim().isEmpty
+      ? null
+      : Uri.https('www.google.com', '/maps/search/', {
+          'api': '1',
+          'query': location.trim(),
+        });
+
   String get result => rkavicScore == null || opponentScore == null
       ? 'Result not entered'
       : 'RKAVIC $rkavicScore – $opponentScore Opponent';

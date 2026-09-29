@@ -34,4 +34,43 @@ void main() {
     expect(invitationDraft(match), contains('Field: 1B2'));
     expect(substitutesDraft(match), contains('Field: 1B2'));
   });
+
+  test('venue drafts include an encoded Google Maps link', () {
+    const addressMatch = TeamMatch(
+      2,
+      'Away match',
+      '2026-10-03 10:00',
+      '2026-10-03 09:30',
+      'Sportpark De Meern, Utrecht',
+      '1B2',
+      '2026-10-01 18:00',
+      null,
+      null,
+      false,
+    );
+    final mapsUri = addressMatch.mapsUri!;
+    expect(mapsUri.host, 'www.google.com');
+    expect(mapsUri.path, '/maps/search/');
+    expect(mapsUri.queryParameters['api'], '1');
+    expect(mapsUri.queryParameters['query'], addressMatch.location);
+    expect(invitationDraft(addressMatch), contains('Map: $mapsUri'));
+    expect(substitutesDraft(addressMatch), contains('Map: $mapsUri'));
+  });
+
+  test('a match without an address has no map link', () {
+    const noAddress = TeamMatch(
+      3,
+      'Home match',
+      '2026-10-03 10:00',
+      '2026-10-03 09:30',
+      ' ',
+      '1B2',
+      '2026-10-01 18:00',
+      null,
+      null,
+      false,
+    );
+    expect(noAddress.mapsUri, isNull);
+    expect(invitationDraft(noAddress), isNot(contains('Map:')));
+  });
 }

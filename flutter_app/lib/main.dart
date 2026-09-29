@@ -110,15 +110,22 @@ class _TeamHomeState extends State<TeamHome> {
           if (wide) _sidebar(),
           Expanded(
             child: SafeArea(
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1140),
-                  child: SingleChildScrollView(
-                    padding: EdgeInsets.all(wide ? 36 : 20),
-                    child: content,
+              child: Column(
+                children: [
+                  if (!wide) _mobileHeader(),
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1140),
+                        child: SingleChildScrollView(
+                          padding: EdgeInsets.all(wide ? 36 : 20),
+                          child: content,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                ],
               ),
             ),
           ),
@@ -126,26 +133,49 @@ class _TeamHomeState extends State<TeamHome> {
       ),
       bottomNavigationBar: wide
           ? null
-          : NavigationBar(
-              selectedIndex: page,
-              onDestinationSelected: navigate,
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.space_dashboard_outlined),
-                  selectedIcon: Icon(Icons.space_dashboard),
-                  label: 'Overview',
+          : NavigationBarTheme(
+              data: NavigationBarThemeData(
+                backgroundColor: forest,
+                indicatorColor: const Color(0xFF315A49),
+                iconTheme: WidgetStateProperty.resolveWith(
+                  (states) => IconThemeData(
+                    color: states.contains(WidgetState.selected)
+                        ? lime
+                        : Colors.white70,
+                  ),
                 ),
-                NavigationDestination(
-                  icon: Icon(Icons.sports_soccer_outlined),
-                  selectedIcon: Icon(Icons.sports_soccer),
-                  label: 'Matches',
+                labelTextStyle: WidgetStateProperty.resolveWith(
+                  (states) => TextStyle(
+                    color: states.contains(WidgetState.selected)
+                        ? lime
+                        : Colors.white70,
+                    fontWeight: states.contains(WidgetState.selected)
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                  ),
                 ),
-                NavigationDestination(
-                  icon: Icon(Icons.groups_outlined),
-                  selectedIcon: Icon(Icons.groups),
-                  label: 'Players',
-                ),
-              ],
+              ),
+              child: NavigationBar(
+                selectedIndex: page,
+                onDestinationSelected: navigate,
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.space_dashboard_outlined),
+                    selectedIcon: Icon(Icons.space_dashboard),
+                    label: 'Overview',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.sports_soccer_outlined),
+                    selectedIcon: Icon(Icons.sports_soccer),
+                    label: 'Matches',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.groups_outlined),
+                    selectedIcon: Icon(Icons.groups),
+                    label: 'Players',
+                  ),
+                ],
+              ),
             ),
     );
   }
@@ -157,28 +187,7 @@ class _TeamHomeState extends State<TeamHome> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.all(14),
-          child: Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: lime,
-                child: Icon(Icons.sports_soccer, color: forest),
-              ),
-              SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  'RKAVIC\nTEAM MANAGER',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.1,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+        const Padding(padding: EdgeInsets.all(14), child: _Brand()),
         const SizedBox(height: 42),
         _navItem(0, Icons.space_dashboard_outlined, 'Overview'),
         _navItem(1, Icons.sports_soccer_outlined, 'Matches'),
@@ -194,6 +203,21 @@ class _TeamHomeState extends State<TeamHome> {
               height: 1.6,
             ),
           ),
+        ),
+      ],
+    ),
+  );
+
+  Widget _mobileHeader() => Container(
+    width: double.infinity,
+    color: forest,
+    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+    child: const Row(
+      children: [
+        Expanded(child: _Brand()),
+        Tooltip(
+          message: 'Your team data stays on this device',
+          child: Icon(Icons.lock_outline, color: lime),
         ),
       ],
     ),
@@ -244,9 +268,9 @@ class _TeamHomeState extends State<TeamHome> {
             const SizedBox(height: 7),
             Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 color: forest,
-                fontSize: 34,
+                fontSize: MediaQuery.sizeOf(context).width >= 850 ? 34 : 29,
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -272,7 +296,9 @@ class _TeamHomeState extends State<TeamHome> {
         ),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(30),
+          padding: EdgeInsets.all(
+            MediaQuery.sizeOf(context).width >= 850 ? 30 : 22,
+          ),
           decoration: BoxDecoration(
             color: forest,
             borderRadius: BorderRadius.circular(26),
@@ -722,7 +748,11 @@ class _TeamHomeState extends State<TeamHome> {
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: location,
-                      decoration: const InputDecoration(labelText: 'Location'),
+                      decoration: const InputDecoration(
+                        labelText: 'Address or venue',
+                        hintText: 'Street address or sports complex',
+                        helperText: 'Opens in Google Maps from match details',
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextFormField(
@@ -919,6 +949,64 @@ class _TeamHomeState extends State<TeamHome> {
     theirs.dispose();
   }
 
+  Widget _mapCard(TeamMatch match) => Card(
+    margin: EdgeInsets.zero,
+    clipBehavior: Clip.antiAlias,
+    child: InkWell(
+      onTap: () async {
+        try {
+          final opened = await launchUrl(
+            match.mapsUri!,
+            mode: LaunchMode.externalApplication,
+          );
+          if (!opened && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not open Google Maps.')),
+            );
+          }
+        } catch (_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not open Google Maps.')),
+            );
+          }
+        }
+      },
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            const CircleAvatar(
+              backgroundColor: lime,
+              child: Icon(Icons.place_outlined, color: forest),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    match.location,
+                    style: const TextStyle(
+                      color: forest,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  const Text(
+                    'Open in Google Maps',
+                    style: TextStyle(color: Color(0xFF60806C)),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.open_in_new, color: forest),
+          ],
+        ),
+      ),
+    ),
+  );
+
   Widget _matchDetail(TeamMatch match) => FutureBuilder(
     future: Future.wait([
       widget.store.attendance(match.id),
@@ -977,6 +1065,10 @@ class _TeamHomeState extends State<TeamHome> {
             ],
           ),
           const SizedBox(height: 20),
+          if (match.mapsUri != null) ...[
+            _mapCard(match),
+            const SizedBox(height: 20),
+          ],
           Wrap(
             spacing: 16,
             runSpacing: 16,
@@ -1295,4 +1387,29 @@ class _TeamHomeState extends State<TeamHome> {
       ),
     );
   }
+}
+
+class _Brand extends StatelessWidget {
+  const _Brand();
+
+  @override
+  Widget build(BuildContext context) => const Row(
+    children: [
+      CircleAvatar(
+        backgroundColor: lime,
+        child: Icon(Icons.sports_soccer, color: forest),
+      ),
+      SizedBox(width: 12),
+      Expanded(
+        child: Text(
+          'RKAVIC\nTEAM MANAGER',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.1,
+          ),
+        ),
+      ),
+    ],
+  );
 }

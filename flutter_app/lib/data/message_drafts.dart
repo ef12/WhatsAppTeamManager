@@ -3,6 +3,9 @@ import 'team_store.dart';
 String _fieldLine(TeamMatch match) =>
     match.fieldNumber.isEmpty ? '' : 'Field: ${match.fieldNumber}\n';
 
+String _mapsLine(TeamMatch match) =>
+    match.mapsUri == null ? '' : 'Map: ${match.mapsUri}\n';
+
 String invitationDraft(TeamMatch match) {
   final field = _fieldLine(match);
   return '⚽ ${match.title}\n'
@@ -10,6 +13,7 @@ String invitationDraft(TeamMatch match) {
       '⏰ Meet: ${match.meet}\n'
       '📍 ${match.location}\n'
       '$field'
+      '${_mapsLine(match)}'
       'Please confirm attendance by ${match.deadline}. 🙏';
 }
 
@@ -54,5 +58,6 @@ String substitutesDraft(TeamMatch match) {
       '⏰ Meet: ${match.meet}\n'
       '📍 ${match.location}\n'
       '$field'
+      '${_mapsLine(match)}'
       'Who can help? 🙏⚽';
 }
