@@ -839,7 +839,7 @@ class _TeamHomeState extends State<TeamHome> {
                           FilteringTextInputFormatter.digitsOnly,
                         ],
                         decoration: const InputDecoration(
-                          labelText: 'Opponent goals',
+                          labelText: 'Opponent',
                         ),
                       ),
                     ),
