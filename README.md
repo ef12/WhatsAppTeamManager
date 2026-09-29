@@ -1,43 +1,45 @@
-# RKAVIC Team Manager (Android V1)
+# RKAVIC Team Manager
 
-A local, single-manager app for organizing team matches. Player and match data stays in SQLite on the phone. WhatsApp messages are drafts opened through Android's share sheet; the manager sends them manually and records replies in the app.
+A local team manager for Android and Windows, built with Flutter. Plan matches, manage players and parents, record attendance and duties, enter scores, and mark matches done. The app prepares WhatsApp messages for you to review and share manually.
 
 ## Features
 
-- Add and edit players and parent names.
-- Add and edit matches with kickoff, meeting time, location, and attendance deadline.
-- Record each player's attendance, assign duties, and mark duties complete.
-- Enter RKAVIC and opponent scores; mark a match done or reopen it.
-- Draft invitations, reminders, duty announcements, and substitute requests for manual sharing.
+- Add, edit, and delete players and matches.
+- Set kickoff, meetup, location, and reply deadline with date and time pickers.
+- Record attendance and assign duties to a player or parent.
+- Enter a result, mark a match done, and reopen it later.
+- Preview and manually share invitation, reminder, duty, and substitute drafts. On Android, the share sheet opens. On Windows, the draft is copied and WhatsApp Web opens when you choose that action.
 
-The app has no cloud sync, login, parent portal, automatic WhatsApp reply reading, or export.
+Each device keeps its own SQLite database. There is no account, cloud sync, automatic WhatsApp sending, or automatic reading of replies.
 
-## Build
+## Source layout
 
-Use a full JDK 17 with `javac` and Android SDK 35. In Android Studio, select JDK 17 as the Gradle JDK if its bundled runtime is newer. The checked-in wrapper downloads Gradle 8.13.
+`flutter_app/` is the Android and Windows app. The original Kotlin Android project remains in `app/` for reference. New distributions are built from Flutter.
 
-On Windows:
+The Flutter Android app keeps the original application ID `nl.rkavic.manager` and database name `team.db`. Version `0.3.0+3` upgrades an installed `0.2` build when signed with the **same key**, retaining its local data. Windows stores a separate database in the user's application support folder.
+
+## Build locally
+
+Install Flutter 3.47.5 and its [Android](https://docs.flutter.dev/platform-integration/android/setup) or [Windows](https://docs.flutter.dev/platform-integration/windows/setup) prerequisites. Windows builds need Visual Studio with Desktop development with C++ and Windows Developer Mode enabled for plugin symlinks.
 
 ```powershell
-.\gradlew.bat assembleDebug
+cd flutter_app
+flutter pub get
+flutter analyze
+flutter test
+flutter build apk --debug
+flutter build windows --release
 ```
 
-On macOS or Linux:
+Build outputs:
 
-```sh
-./gradlew assembleDebug
-```
+- Android: `flutter_app/build/app/outputs/flutter-apk/app-debug.apk`
+- Windows: `flutter_app/build/windows/x64/runner/Release/` (distribute the entire folder)
 
-The debug APK is at `app/build/outputs/apk/debug/app-debug.apk`. You can also use Android Studio's **Build > Build APK(s)** command.
+The Flutter Android debug build uses `app/debug.keystore`. Keep your existing copy to install over an earlier build without deleting data. For a fresh clone, create a debug key at that path using the standard Android debug alias and passwords, or use the manual GitHub workflow to generate one. Signing a production release requires a separate release key and Gradle configuration.
 
-Gradle creates `app/debug.keystore` on the first debug build. This local test key is ignored by Git. Keep it if you want future debug APKs to install over this build on the same phone. The key is not for release signing.
+## Manual distributions from GitHub
 
-## Manual APK distribution workflow
+In **Actions → Build app distributions → Run workflow**, start the workflow. It uploads an Android debug APK and a Windows ZIP as separate artifacts, each retained for 30 days. Extract the whole Windows ZIP and run `rkavic_manager.exe`. You may need the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) on the destination PC.
 
-In GitHub, open **Actions > Build APK distribution > Run workflow**. The workflow builds and verifies a debug APK, then provides a downloadable artifact containing the APK, `SHA256SUMS`, and `INSTALL.txt`. The artifact is kept for 30 days. It does not publish a GitHub release or send WhatsApp messages.
-
-For APKs from separate workflow runs to install as updates over one another, add a repository Actions secret named `DEBUG_KEYSTORE_BASE64` containing the Base64 encoding of your existing `app/debug.keystore`. That key must use the app's standard debug alias and password (`androiddebugkey` / `android`). Keep the original key in a safe place. If the secret is absent, each run creates a new test key, so its APK is suitable for a fresh install but cannot update a build signed with another key. Uninstalling to change keys deletes the app's local data.
-
-## Install and data
-
-Copy the APK to an Android phone and allow installation from that source, or use Android Studio's **Run** command with USB debugging. An upgrade from the earlier V1 database keeps existing players, matches, attendance, and duties. Uninstalling the app deletes its local database, so back up important data before uninstalling.
+To make the GitHub APK update an installed copy, set the Actions secret `DEBUG_KEYSTORE_BASE64` to the Base64 encoding of the existing `app/debug.keystore`. Without it, each workflow run creates a new debug key and its APK is suitable only for a fresh install. Uninstalling Android app data deletes the local database.

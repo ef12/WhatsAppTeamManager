@@ -1,0 +1,281 @@
+import 'dart:io';
+
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart' as mobile;
+import 'package:sqflite_common/sqlite_api.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' as desktop;
+
+class Player {
+  const Player(this.id, this.name, this.parent);
+
+  final int id;
+  final String name;
+  final String parent;
+
+  factory Player.fromRow(Map<String, Object?> row) =>
+      Player(row['id'] as int, row['name'] as String, row['parent'] as String);
+}
+
+class TeamMatch {
+  const TeamMatch(
+    this.id,
+    this.title,
+    this.kickoff,
+    this.meet,
+    this.location,
+    this.deadline,
+    this.rkavicScore,
+    this.opponentScore,
+    this.done,
+  );
+
+  final int id;
+  final String title;
+  final String kickoff;
+  final String meet;
+  final String location;
+  final String deadline;
+  final int? rkavicScore;
+  final int? opponentScore;
+  final bool done;
+
+  String get result => rkavicScore == null || opponentScore == null
+      ? 'Result not entered'
+      : 'RKAVIC $rkavicScore – $opponentScore Opponent';
+
+  factory TeamMatch.fromRow(Map<String, Object?> row) => TeamMatch(
+    row['id'] as int,
+    row['title'] as String,
+    row['date'] as String,
+    row['meet'] as String,
+    row['location'] as String,
+    row['deadline'] as String,
+    row['rkavic_score'] as int?,
+    row['opponent_score'] as int?,
+    row['done'] == 1,
+  );
+}
+
+class Duty {
+  const Duty(this.id, this.title, this.playerId, this.done);
+
+  final int id;
+  final String title;
+  final int? playerId;
+  final bool done;
+
+  factory Duty.fromRow(Map<String, Object?> row) => Duty(
+    row['id'] as int,
+    row['title'] as String,
+    row['player_id'] as int?,
+    row['done'] == 1,
+  );
+}
+
+class TeamStore {
+  TeamStore._(this._db);
+
+  final Database _db;
+
+  static Future<TeamStore> open() async {
+    late final DatabaseFactory factory;
+    late final String dbPath;
+    if (Platform.isWindows) {
+      desktop.sqfliteFfiInit();
+      factory = desktop.databaseFactoryFfi;
+      final directory = await getApplicationSupportDirectory();
+      dbPath = path.join(directory.path, 'team.db');
+    } else {
+      factory = mobile.databaseFactory;
+      // This is the Android SQLiteOpenHelper location used by V1.
+      dbPath = path.join(await mobile.getDatabasesPath(), 'team.db');
+    }
+
+    final db = await factory.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(
+        version: 2,
+        onCreate: (db, version) async {
+          await db.execute(
+            'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
+            'parent TEXT NOT NULL)',
+          );
+          await db.execute(
+            'CREATE TABLE matches(id INTEGER PRIMARY KEY,title TEXT NOT NULL,'
+            'date TEXT NOT NULL,meet TEXT NOT NULL,location TEXT NOT NULL,'
+            'deadline TEXT NOT NULL,rkavic_score INTEGER,opponent_score INTEGER,'
+            'done INTEGER NOT NULL DEFAULT 0)',
+          );
+          await db.execute(
+            'CREATE TABLE attendance(match_id INTEGER NOT NULL,'
+            'player_id INTEGER NOT NULL,status INTEGER NOT NULL,'
+            'PRIMARY KEY(match_id,player_id))',
+          );
+          await db.execute(
+            'CREATE TABLE duties(id INTEGER PRIMARY KEY,match_id INTEGER NOT NULL,'
+            'title TEXT NOT NULL,player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)',
+          );
+        },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await db.execute(
+              'ALTER TABLE matches ADD COLUMN rkavic_score INTEGER',
+            );
+            await db.execute(
+              'ALTER TABLE matches ADD COLUMN opponent_score INTEGER',
+            );
+            await db.execute(
+              'ALTER TABLE matches ADD COLUMN done INTEGER NOT NULL DEFAULT 0',
+            );
+          }
+        },
+      ),
+    );
+    return TeamStore._(db);
+  }
+
+  Future<void> close() => _db.close();
+
+  Future<List<Player>> players() async => (await _db.query(
+    'players',
+    orderBy: 'name COLLATE NOCASE, id',
+  )).map(Player.fromRow).toList();
+
+  Future<int> addPlayer(String name, String parent) =>
+      _db.insert('players', {'name': name, 'parent': parent});
+
+  Future<void> updatePlayer(int id, String name, String parent) async {
+    await _db.update(
+      'players',
+      {'name': name, 'parent': parent},
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deletePlayer(int id) => _db.transaction((txn) async {
+    await txn.delete('players', where: 'id=?', whereArgs: [id]);
+    await txn.delete('attendance', where: 'player_id=?', whereArgs: [id]);
+    await txn.rawUpdate('UPDATE duties SET player_id=NULL WHERE player_id=?', [
+      id,
+    ]);
+  });
+
+  Future<List<TeamMatch>> matches() async => (await _db.query(
+    'matches',
+    orderBy: 'date, id',
+  )).map(TeamMatch.fromRow).toList();
+
+  Future<TeamMatch?> match(int id) async {
+    final rows = await _db.query('matches', where: 'id=?', whereArgs: [id]);
+    return rows.isEmpty ? null : TeamMatch.fromRow(rows.first);
+  }
+
+  Future<int> addMatch({
+    required String title,
+    required String kickoff,
+    required String meet,
+    required String location,
+    required String deadline,
+  }) => _db.insert('matches', {
+    'title': title,
+    'date': kickoff,
+    'meet': meet,
+    'location': location,
+    'deadline': deadline,
+  });
+
+  Future<void> updateMatch(
+    int id, {
+    required String title,
+    required String kickoff,
+    required String meet,
+    required String location,
+    required String deadline,
+  }) async {
+    await _db.update(
+      'matches',
+      {
+        'title': title,
+        'date': kickoff,
+        'meet': meet,
+        'location': location,
+        'deadline': deadline,
+      },
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> setResult(int id, int? rkavic, int? opponent, bool done) async {
+    await _db.update(
+      'matches',
+      {
+        'rkavic_score': rkavic,
+        'opponent_score': opponent,
+        'done': done ? 1 : 0,
+      },
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteMatch(int id) => _db.transaction((txn) async {
+    await txn.delete('matches', where: 'id=?', whereArgs: [id]);
+    await txn.delete('attendance', where: 'match_id=?', whereArgs: [id]);
+    await txn.delete('duties', where: 'match_id=?', whereArgs: [id]);
+  });
+
+  Future<Map<int, int>> attendance(int matchId) async {
+    final rows = await _db.query(
+      'attendance',
+      columns: ['player_id', 'status'],
+      where: 'match_id=?',
+      whereArgs: [matchId],
+    );
+    return {
+      for (final row in rows) row['player_id'] as int: row['status'] as int,
+    };
+  }
+
+  Future<void> setAttendance(int matchId, int playerId, int status) async {
+    await _db.insert('attendance', {
+      'match_id': matchId,
+      'player_id': playerId,
+      'status': status,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<Duty>> duties(int matchId) async => (await _db.query(
+    'duties',
+    where: 'match_id=?',
+    whereArgs: [matchId],
+    orderBy: 'id',
+  )).map(Duty.fromRow).toList();
+
+  Future<int> addDuty(int matchId, String title) =>
+      _db.insert('duties', {'match_id': matchId, 'title': title, 'done': 0});
+
+  Future<void> assignDuty(int id, int? playerId) async {
+    await _db.update(
+      'duties',
+      {'player_id': playerId},
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> setDutyDone(int id, bool done) async {
+    await _db.update(
+      'duties',
+      {'done': done ? 1 : 0},
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteDuty(int id) async {
+    await _db.delete('duties', where: 'id=?', whereArgs: [id]);
+  }
+}
