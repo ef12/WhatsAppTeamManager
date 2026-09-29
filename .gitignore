@@ -1,0 +1,27 @@
+# Android Studio and local SDK settings
+.idea/
+*.iml
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Gradle and Kotlin outputs
+.gradle/
+.gradle-user-home/
+.android-user-home/
+.kotlin/
+**/build/
+
+# Local signing keys and packages
+*.keystore
+*.jks
+*.p12
+*.apk
+*.aab
+
+# Local toolchains and OS files
+.jdk17/
+temurin17-jdk.zip
+.DS_Store
+Thumbs.db
