@@ -35,6 +35,15 @@ void main() {
     expect(substitutesDraft(match), contains('Field: 1B2'));
   });
 
+  test('poll draft gives WhatsApp poll details to copy manually', () {
+    final draft = attendancePollDraft(match);
+    expect(draft, contains('Question: Can you join this match?'));
+    expect(draft, contains('1. Yes'));
+    expect(draft, contains('2. No'));
+    expect(draft, contains('3. Maybe'));
+    expect(draft, contains('Reply deadline: 2026-10-01 18:00'));
+  });
+
   test('venue drafts include an encoded Google Maps link', () {
     const addressMatch = TeamMatch(
       2,

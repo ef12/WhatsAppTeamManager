@@ -17,6 +17,17 @@ String invitationDraft(TeamMatch match) {
       'Please confirm attendance by ${match.deadline}. 🙏';
 }
 
+String attendancePollDraft(TeamMatch match) =>
+    'Poll for ${match.title}\n'
+    'Question: Can you join this match?\n'
+    'Options:\n'
+    '1. Yes\n'
+    '2. No\n'
+    '3. Maybe\n\n'
+    'Match: ${match.kickoff}\n'
+    'Meet: ${match.meet}\n'
+    'Reply deadline: ${match.deadline}';
+
 String reminderDraft(
   TeamMatch match,
   List<Player> players,

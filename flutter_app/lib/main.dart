@@ -1394,6 +1394,11 @@ class _TeamHomeState extends State<TeamHome> {
                 invitationDraft(match),
               ),
               _draftButton(
+                'Poll',
+                Icons.poll_outlined,
+                attendancePollDraft(match),
+              ),
+              _draftButton(
                 'Reminder',
                 Icons.notifications_outlined,
                 reminderDraft(match, players, attendance),
