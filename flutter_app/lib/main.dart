@@ -12,9 +12,9 @@ import 'data/message_drafts.dart';
 import 'data/team_backup.dart';
 import 'data/team_store.dart';
 
-const forest = Color(0xFF163E35);
-const lime = Color(0xFFD8F27A);
-const canvas = Color(0xFFF5F7F3);
+const forest = Color(0xFFF58221);
+const lime = Color(0xFFFFF3E6);
+const canvas = Color(0xFFFFF8F1);
 final dateFormat = DateFormat('yyyy-MM-dd HH:mm');
 
 Future<void> main() async {
@@ -141,7 +141,7 @@ class _TeamHomeState extends State<TeamHome> {
           : NavigationBarTheme(
               data: NavigationBarThemeData(
                 backgroundColor: forest,
-                indicatorColor: const Color(0xFF315A49),
+                indicatorColor: const Color(0xFFC76616),
                 iconTheme: WidgetStateProperty.resolveWith(
                   (states) => IconThemeData(
                     color: states.contains(WidgetState.selected)
@@ -209,7 +209,7 @@ class _TeamHomeState extends State<TeamHome> {
           child: Text(
             'LOCAL & PRIVATE\nMessages are shared by you.',
             style: TextStyle(
-              color: Color(0xFFB7C8BE),
+              color: Color(0xFFFFE2C8),
               fontSize: 11,
               height: 1.6,
             ),
@@ -238,7 +238,7 @@ class _TeamHomeState extends State<TeamHome> {
     padding: const EdgeInsets.only(bottom: 7),
     child: ListTile(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      tileColor: page == index ? const Color(0xFF315A49) : null,
+      tileColor: page == index ? const Color(0xFFC76616) : null,
       leading: Icon(icon, color: page == index ? lime : Colors.white70),
       title: Text(
         label,
@@ -270,7 +270,7 @@ class _TeamHomeState extends State<TeamHome> {
             Text(
               eyebrow.toUpperCase(),
               style: const TextStyle(
-                color: Color(0xFF60806C),
+                color: Color(0xFFA24E0B),
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 2,
@@ -286,7 +286,7 @@ class _TeamHomeState extends State<TeamHome> {
               ),
             ),
             const SizedBox(height: 5),
-            Text(subtitle, style: const TextStyle(color: Color(0xFF687970))),
+            Text(subtitle, style: const TextStyle(color: Color(0xFF6F5B4A))),
           ],
         ),
         ?action,
@@ -347,7 +347,7 @@ class _TeamHomeState extends State<TeamHome> {
                     upcoming.isEmpty
                         ? 'Create a match to get started.'
                         : '${upcoming.first.kickoff}  •  ${upcoming.first.venue}',
-                    style: const TextStyle(color: Color(0xFFD1E0D5)),
+                    style: const TextStyle(color: Color(0xFFFFE7CD)),
                   ),
                 ],
               ),
@@ -464,7 +464,7 @@ class _TeamHomeState extends State<TeamHome> {
       const Text(
         'JSON backups are not encrypted and contain personal information. '
         'Keep them in a secure place and delete old copies when no longer needed.',
-        style: TextStyle(color: Color(0xFF687970)),
+        style: TextStyle(color: Color(0xFF6F5B4A)),
       ),
     ],
   );
@@ -569,7 +569,7 @@ class _TeamHomeState extends State<TeamHome> {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            Text(label, style: const TextStyle(color: Color(0xFF6F7F75))),
+            Text(label, style: const TextStyle(color: Color(0xFF7A5A39))),
           ],
         ),
       ),
@@ -604,7 +604,7 @@ class _TeamHomeState extends State<TeamHome> {
         padding: const EdgeInsets.all(38),
         child: Column(
           children: [
-            Icon(icon, size: 38, color: const Color(0xFF83A28B)),
+            Icon(icon, size: 38, color: const Color(0xFFD9924A)),
             const SizedBox(height: 10),
             Text(
               title,
@@ -617,7 +617,7 @@ class _TeamHomeState extends State<TeamHome> {
             Text(
               subtitle,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFF687970)),
+              style: const TextStyle(color: Color(0xFF6F5B4A)),
             ),
           ],
         ),
@@ -661,7 +661,7 @@ class _TeamHomeState extends State<TeamHome> {
               width: 54,
               height: 54,
               decoration: BoxDecoration(
-                color: const Color(0xFFEAF3E7),
+                color: const Color(0xFFFFE7D0),
                 borderRadius: BorderRadius.circular(14),
               ),
               child: const Icon(Icons.sports_soccer, color: forest),
@@ -682,7 +682,7 @@ class _TeamHomeState extends State<TeamHome> {
                   const SizedBox(height: 4),
                   Text(
                     '${match.kickoff}  •  ${match.venue}',
-                    style: const TextStyle(color: Color(0xFF687970)),
+                    style: const TextStyle(color: Color(0xFF6F5B4A)),
                   ),
                 ],
               ),
@@ -717,58 +717,71 @@ class _TeamHomeState extends State<TeamHome> {
           Icons.groups_outlined,
         )
       else
-        Card(
-          child: Column(
-            children: players
-                .map(
-                  (player) => Column(
-                    children: [
-                      ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 6,
-                        ),
-                        leading: CircleAvatar(
-                          backgroundColor: const Color(0xFFEAF3E7),
-                          child: Text(
-                            player.name[0].toUpperCase(),
-                            style: const TextStyle(
-                              color: forest,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        title: Text(
-                          player.name,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(
-                          player.parent.isEmpty
-                              ? 'No parent name'
-                              : player.parent,
-                        ),
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (value) => value == 'edit'
-                              ? _editPlayer(player)
-                              : _deletePlayer(player),
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'edit', child: Text('Edit')),
-                            PopupMenuItem(
-                              value: 'delete',
-                              child: Text('Delete'),
-                            ),
-                          ],
-                        ),
+        FutureBuilder<Map<int, ParticipationSummary>>(
+          future: widget.store.participationByPlayer(),
+          builder: (context, snapshot) {
+            final participation =
+                snapshot.data ?? const <int, ParticipationSummary>{};
+            return Card(
+              child: Column(
+                children: players
+                    .map(
+                      (player) => Column(
+                        children: [
+                          _playerTile(player, participation[player.id]),
+                          if (player != players.last) const Divider(height: 1),
+                        ],
                       ),
-                      if (player != players.last) const Divider(height: 1),
-                    ],
-                  ),
-                )
-                .toList(),
-          ),
+                    )
+                    .toList(),
+              ),
+            );
+          },
         ),
     ],
   );
+
+  Widget _playerTile(Player player, ParticipationSummary? participation) {
+    final summary = participation == null || participation.total == 0
+        ? 'No events tracked yet'
+        : '${participation.present}/${participation.total} joined'
+              ' · ${participation.absent} absent'
+              ' · ${participation.noResponse} no reply';
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      leading: CircleAvatar(
+        backgroundColor: const Color(0xFFFFE7D0),
+        child: Text(
+          player.name[0].toUpperCase(),
+          style: const TextStyle(color: forest, fontWeight: FontWeight.bold),
+        ),
+      ),
+      title: Text(
+        player.name,
+        style: const TextStyle(fontWeight: FontWeight.bold),
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(player.parent.isEmpty ? 'No parent name' : player.parent),
+          const SizedBox(height: 4),
+          Text(summary),
+          if (participation != null && participation.total > 0) ...[
+            const SizedBox(height: 6),
+            LinearProgressIndicator(value: participation.rate),
+          ],
+        ],
+      ),
+      trailing: PopupMenuButton<String>(
+        onSelected: (value) =>
+            value == 'edit' ? _editPlayer(player) : _deletePlayer(player),
+        itemBuilder: (_) => const [
+          PopupMenuItem(value: 'edit', child: Text('Edit')),
+          PopupMenuItem(value: 'delete', child: Text('Delete')),
+        ],
+      ),
+    );
+  }
 
   Future<void> _editPlayer([Player? player]) async {
     final name = TextEditingController(text: player?.name);
@@ -1077,7 +1090,7 @@ class _TeamHomeState extends State<TeamHome> {
                   ),
                 const Text(
                   'Leave both scores empty if there is no result yet.',
-                  style: TextStyle(fontSize: 12, color: Color(0xFF687970)),
+                  style: TextStyle(fontSize: 12, color: Color(0xFF6F5B4A)),
                 ),
               ],
             ),
@@ -1166,7 +1179,7 @@ class _TeamHomeState extends State<TeamHome> {
                   const SizedBox(height: 3),
                   const Text(
                     'Open in Google Maps',
-                    style: TextStyle(color: Color(0xFF60806C)),
+                    style: TextStyle(color: Color(0xFFA24E0B)),
                   ),
                 ],
               ),
@@ -1260,7 +1273,7 @@ class _TeamHomeState extends State<TeamHome> {
           _section('Attendance', null, ''),
           Text(
             '$coming coming  •  $absent absent  •  ${players.length - coming - absent} awaiting reply',
-            style: const TextStyle(color: Color(0xFF687970)),
+            style: const TextStyle(color: Color(0xFF6F5B4A)),
           ),
           const SizedBox(height: 12),
           if (players.isEmpty)
@@ -1276,7 +1289,7 @@ class _TeamHomeState extends State<TeamHome> {
                     .map(
                       (p) => ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: const Color(0xFFEAF3E7),
+                          backgroundColor: const Color(0xFFFFE7D0),
                           child: Text(
                             p.name[0].toUpperCase(),
                             style: const TextStyle(color: forest),
@@ -1381,7 +1394,7 @@ class _TeamHomeState extends State<TeamHome> {
           _section('WhatsApp drafts', null, ''),
           const Text(
             'Review a draft, then share it yourself.',
-            style: TextStyle(color: Color(0xFF687970)),
+            style: TextStyle(color: Color(0xFF6F5B4A)),
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -1408,6 +1421,12 @@ class _TeamHomeState extends State<TeamHome> {
                 Icons.assignment_outlined,
                 dutiesDraft(match, players, duties),
               ),
+              if (match.rkavicScore != null && match.opponentScore != null)
+                _draftButton(
+                  'Result',
+                  Icons.emoji_events_outlined,
+                  resultDraft(match, attendance),
+                ),
               _draftButton(
                 'Substitutes',
                 Icons.person_search_outlined,
@@ -1437,7 +1456,7 @@ class _TeamHomeState extends State<TeamHome> {
               label,
               style: const TextStyle(
                 fontSize: 11,
-                color: Color(0xFF6C8575),
+                color: Color(0xFF9A5A1F),
                 fontWeight: FontWeight.bold,
                 letterSpacing: 1.2,
               ),

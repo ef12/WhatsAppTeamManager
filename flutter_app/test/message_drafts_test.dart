@@ -44,6 +44,26 @@ void main() {
     expect(draft, contains('Reply deadline: 2026-10-01 18:00'));
   });
 
+  test('result draft publishes a finished match summary', () {
+    const finished = TeamMatch(
+      4,
+      'RKAVIC vs Lions',
+      '2026-10-03 10:00',
+      '2026-10-03 09:30',
+      'Home field',
+      '1B2',
+      '2026-10-01 18:00',
+      3,
+      1,
+      true,
+    );
+    final draft = resultDraft(finished, {1: 1, 2: 2});
+    expect(draft, contains('Final result - RKAVIC vs Lions'));
+    expect(draft, contains('RKAVIC 3 - 1 Opponent'));
+    expect(draft, contains('A strong win for the team.'));
+    expect(draft, contains('Players marked present: 1'));
+  });
+
   test('venue drafts include an encoded Google Maps link', () {
     const addressMatch = TeamMatch(
       2,

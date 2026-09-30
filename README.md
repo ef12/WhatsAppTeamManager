@@ -6,10 +6,11 @@ A local team manager for Android and Windows, built with Flutter. Plan matches, 
 
 - Add, edit, and delete players and matches.
 - Set kickoff, meetup, address or venue, field number (for example `1B2`), and reply deadline with date and time pickers. Tap the address on a match to open it in Google Maps.
-- Record attendance and assign duties to a player or parent.
+- Record attendance, track each member's participation across events, and assign duties to a player or parent.
 - Enter a result, mark a match done, and reopen it later.
-- Preview and manually share invitation, reminder, duty, and substitute drafts. Invitation and substitute drafts include a Google Maps link when the match has an address or venue. On Android, the share sheet opens. On Windows, the draft is copied and WhatsApp Web opens when you choose that action.
-- Use the same forest and lime design on Android and Windows, with navigation adapted to each screen size.
+- Preview and manually share invitation, poll, reminder, duty, result, and substitute drafts. Invitation and substitute drafts include a Google Maps link when the match has an address or venue. On Android, the share sheet opens. On Windows, the draft is copied and WhatsApp Web opens when you choose that action.
+- Export and import a JSON backup to move the complete local team data between Android and Windows.
+- Use the same RKAVIC orange design on Android and Windows, with navigation adapted to each screen size.
 
 Each device keeps its own SQLite database. There is no account, cloud sync, automatic WhatsApp sending, or automatic reading of replies.
 

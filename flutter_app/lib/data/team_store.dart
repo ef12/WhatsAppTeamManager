@@ -90,6 +90,24 @@ class Duty {
   );
 }
 
+class ParticipationSummary {
+  const ParticipationSummary({
+    required this.playerId,
+    required this.present,
+    required this.absent,
+    required this.noResponse,
+  });
+
+  final int playerId;
+  final int present;
+  final int absent;
+  final int noResponse;
+
+  int get total => present + absent + noResponse;
+
+  double get rate => total == 0 ? 0 : present / total;
+}
+
 class TeamStore {
   TeamStore._(this._db);
 
@@ -298,6 +316,37 @@ class TeamStore {
     );
     return {
       for (final row in rows) row['player_id'] as int: row['status'] as int,
+    };
+  }
+
+  Future<Map<int, ParticipationSummary>> participationByPlayer() async {
+    final matchCountRows = await _db.rawQuery(
+      'SELECT COUNT(*) AS total FROM matches',
+    );
+    final totalMatches = matchCountRows.first['total'] as int? ?? 0;
+    final rows = await _db.rawQuery(
+      'SELECT player_id, status, COUNT(*) AS total FROM attendance '
+      'GROUP BY player_id, status',
+    );
+    final counts = <int, Map<int, int>>{};
+    for (final row in rows) {
+      final playerId = row['player_id'] as int;
+      final status = row['status'] as int;
+      final total = row['total'] as int;
+      counts.putIfAbsent(playerId, () => <int, int>{})[status] = total;
+    }
+    final players = await this.players();
+    return {
+      for (final player in players)
+        player.id: ParticipationSummary(
+          playerId: player.id,
+          present: counts[player.id]?[1] ?? 0,
+          absent: counts[player.id]?[2] ?? 0,
+          noResponse:
+              totalMatches -
+              (counts[player.id]?[1] ?? 0) -
+              (counts[player.id]?[2] ?? 0),
+        ),
     };
   }
 

@@ -28,6 +28,27 @@ String attendancePollDraft(TeamMatch match) =>
     'Meet: ${match.meet}\n'
     'Reply deadline: ${match.deadline}';
 
+String resultDraft(TeamMatch match, Map<int, int> attendance) {
+  final ours = match.rkavicScore;
+  final theirs = match.opponentScore;
+  final score = ours == null || theirs == null
+      ? 'Result not entered yet'
+      : 'RKAVIC $ours - $theirs Opponent';
+  final outcome = ours == null || theirs == null
+      ? 'Thank you for a good match.'
+      : ours > theirs
+      ? 'A strong win for the team.'
+      : ours == theirs
+      ? 'A hard-earned draw.'
+      : 'Heads up, we go again next time.';
+  final present = attendance.values.where((status) => status == 1).length;
+  return 'Final result - ${match.title}\n'
+      '$score\n\n'
+      '$outcome\n'
+      'Players marked present: $present\n'
+      'Thanks everyone for the effort and support.';
+}
+
 String reminderDraft(
   TeamMatch match,
   List<Player> players,

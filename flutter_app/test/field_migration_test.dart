@@ -88,4 +88,51 @@ void main() {
       await directory.delete(recursive: true);
     }
   });
+
+  test(
+    'participation summaries count joined, absent, and no reply events',
+    () async {
+      sqfliteFfiInit();
+      final directory = await Directory.systemTemp.createTemp(
+        'rkavic-participation-',
+      );
+      try {
+        final store = await TeamStore.openAt(
+          path.join(directory.path, 'team.db'),
+          databaseFactoryFfi,
+        );
+        final sam = await store.addPlayer('Sam', 'Alex');
+        final jo = await store.addPlayer('Jo', '');
+        final first = await store.addMatch(
+          title: 'Lions',
+          kickoff: '2026-10-03 10:00',
+          meet: '2026-10-03 09:30',
+          location: 'Home field',
+          fieldNumber: '1B2',
+          deadline: '2026-10-01 18:00',
+        );
+        await store.addMatch(
+          title: 'Tigers',
+          kickoff: '2026-10-10 10:00',
+          meet: '2026-10-10 09:30',
+          location: 'Away field',
+          fieldNumber: '2',
+          deadline: '2026-10-08 18:00',
+        );
+        await store.setAttendance(first, sam, 1);
+        await store.setAttendance(first, jo, 2);
+
+        final summaries = await store.participationByPlayer();
+        expect(summaries[sam]!.present, 1);
+        expect(summaries[sam]!.absent, 0);
+        expect(summaries[sam]!.noResponse, 1);
+        expect(summaries[jo]!.present, 0);
+        expect(summaries[jo]!.absent, 1);
+        expect(summaries[jo]!.noResponse, 1);
+        await store.close();
+      } finally {
+        await directory.delete(recursive: true);
+      }
+    },
+  );
 }
