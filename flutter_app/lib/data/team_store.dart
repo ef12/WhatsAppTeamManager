@@ -6,6 +6,8 @@ import 'package:sqflite/sqflite.dart' as mobile;
 import 'package:sqflite_common/sqlite_api.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as desktop;
 
+import 'team_backup.dart';
+
 class Player {
   const Player(this.id, this.name, this.parent);
 
@@ -164,6 +166,34 @@ class TeamStore {
   }
 
   Future<void> close() => _db.close();
+
+  Future<TeamBackup> exportBackup() => _db.transaction(
+    (txn) async => TeamBackup.capture(
+      players: await txn.query('players', orderBy: 'id'),
+      matches: await txn.query('matches', orderBy: 'id'),
+      attendance: await txn.query('attendance', orderBy: 'match_id, player_id'),
+      duties: await txn.query('duties', orderBy: 'id'),
+    ),
+  );
+
+  Future<void> replaceWithBackup(TeamBackup backup) =>
+      _db.transaction((txn) async {
+        for (final table in ['attendance', 'duties', 'matches', 'players']) {
+          await txn.delete(table);
+        }
+        for (final row in backup.players) {
+          await txn.insert('players', row);
+        }
+        for (final row in backup.matches) {
+          await txn.insert('matches', row);
+        }
+        for (final row in backup.attendance) {
+          await txn.insert('attendance', row);
+        }
+        for (final row in backup.duties) {
+          await txn.insert('duties', row);
+        }
+      });
 
   Future<List<Player>> players() async => (await _db.query(
     'players',

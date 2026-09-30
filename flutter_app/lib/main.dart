@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -7,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'data/message_drafts.dart';
+import 'data/team_backup.dart';
 import 'data/team_store.dart';
 
 const forest = Color(0xFF163E35);
@@ -103,7 +106,9 @@ class _TeamHomeState extends State<TeamHome> {
         ? _dashboard()
         : page == 1
         ? _matches()
-        : _players();
+        : page == 2
+        ? _players()
+        : _backupPage();
     return Scaffold(
       body: Row(
         children: [
@@ -174,6 +179,11 @@ class _TeamHomeState extends State<TeamHome> {
                     selectedIcon: Icon(Icons.groups),
                     label: 'Players',
                   ),
+                  NavigationDestination(
+                    icon: Icon(Icons.save_alt_outlined),
+                    selectedIcon: Icon(Icons.save_alt),
+                    label: 'Backup',
+                  ),
                 ],
               ),
             ),
@@ -192,6 +202,7 @@ class _TeamHomeState extends State<TeamHome> {
         _navItem(0, Icons.space_dashboard_outlined, 'Overview'),
         _navItem(1, Icons.sports_soccer_outlined, 'Matches'),
         _navItem(2, Icons.groups_outlined, 'Players'),
+        _navItem(3, Icons.save_alt_outlined, 'Backup'),
         const Spacer(),
         const Padding(
           padding: EdgeInsets.all(14),
@@ -376,6 +387,166 @@ class _TeamHomeState extends State<TeamHome> {
           ...matches.take(4).map(_matchCard),
       ],
     );
+  }
+
+  Widget _backupPage() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _heading(
+        'Keep a copy of your team',
+        'Backup & transfer',
+        'Move the full team between Android and Windows with a JSON file.',
+      ),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.save_alt_outlined, color: forest, size: 34),
+              const SizedBox(height: 14),
+              const Text(
+                'Export everything',
+                style: TextStyle(
+                  color: forest,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${players.length} players and ${matches.length} matches, '
+                'including attendance, duties, results, and field numbers.',
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: _exportJson,
+                icon: const Icon(Icons.file_download_outlined),
+                label: const Text('Save JSON file'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 16),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.file_upload_outlined, color: forest, size: 34),
+              const SizedBox(height: 14),
+              const Text(
+                'Import a backup',
+                style: TextStyle(
+                  color: forest,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Choose a RKAVIC JSON backup. You can review its date and '
+                'contents before it replaces all data on this device.',
+              ),
+              const SizedBox(height: 18),
+              OutlinedButton.icon(
+                onPressed: _importJson,
+                icon: const Icon(Icons.file_upload_outlined),
+                label: const Text('Choose JSON file'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 18),
+      const Text(
+        'JSON backups are not encrypted and contain personal information. '
+        'Keep them in a secure place and delete old copies when no longer needed.',
+        style: TextStyle(color: Color(0xFF687970)),
+      ),
+    ],
+  );
+
+  void _backupMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _exportJson() async {
+    try {
+      final backup = await widget.store.exportBackup();
+      final name =
+          'RKAVIC-Team-${DateFormat('yyyyMMdd-HHmm').format(DateTime.now())}.json';
+      final saved = await FilePicker.saveFile(
+        fileName: name,
+        bytes: Uint8List.fromList(utf8.encode(backup.toJsonString())),
+        mimeType: 'application/json',
+        dialogTitle: 'Save RKAVIC team backup',
+      );
+      if (saved != null) _backupMessage('Team backup saved.');
+    } catch (_) {
+      _backupMessage('Could not save the backup. Please try again.');
+    }
+  }
+
+  Future<void> _importJson() async {
+    try {
+      final file = await FilePicker.pickFile(
+        dialogTitle: 'Choose a RKAVIC team backup',
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      if (file == null) return;
+      final length = await file.length();
+      if (length != null && length > 10 * 1024 * 1024) {
+        throw const FormatException('The backup file is too large.');
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.length > 10 * 1024 * 1024) {
+        throw const FormatException('The backup file is too large.');
+      }
+      final backup = TeamBackup.fromJsonString(utf8.decode(bytes));
+      if (!mounted) return;
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Replace local team data?'),
+          content: Text(
+            'Backup from ${DateFormat('yyyy-MM-dd HH:mm').format(backup.exportedAt.toLocal())}\n\n'
+            '${backup.players.length} players, ${backup.matches.length} matches, '
+            '${backup.attendance.length} attendance entries, and '
+            '${backup.duties.length} duties.\n\n'
+            'All current data on this device will be replaced. '
+            'Export it first if you want to keep a copy.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Replace data'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      await widget.store.replaceWithBackup(backup);
+      if (!mounted) return;
+      navigate(0);
+      await refresh();
+      _backupMessage('Team backup imported.');
+    } on FormatException catch (error) {
+      _backupMessage(error.message);
+    } catch (_) {
+      _backupMessage(
+        'Could not import this backup. Your data was not changed.',
+      );
+    }
   }
 
   Widget _stat(String label, int value, IconData icon) => SizedBox(
@@ -1393,11 +1564,13 @@ class _Brand extends StatelessWidget {
   const _Brand();
 
   @override
-  Widget build(BuildContext context) => const Row(
+  Widget build(BuildContext context) => Row(
     children: [
       CircleAvatar(
-        backgroundColor: lime,
-        child: Icon(Icons.sports_soccer, color: forest),
+        backgroundColor: Colors.white,
+        child: ClipOval(
+          child: Image.asset('assets/rkavic_crest.png', width: 40, height: 40),
+        ),
       ),
       SizedBox(width: 12),
       Expanded(
