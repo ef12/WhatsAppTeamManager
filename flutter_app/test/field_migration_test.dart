@@ -22,6 +22,7 @@ void main() {
         meet: '2026-10-03 09:30',
         location: 'Home field',
         fieldNumber: '1B2',
+        isHome: false,
         deadline: '2026-10-01 18:00',
       );
       expect((await store.matches()).single.venue, 'Home field • Field 1B2');
@@ -77,12 +78,14 @@ void main() {
         meet: match.meet,
         location: match.location,
         fieldNumber: '1B2',
+        isHome: true,
         deadline: match.deadline,
       );
       await store.close();
 
       final reopened = await TeamStore.openAt(dbPath, factory);
       expect((await reopened.matches()).single.fieldNumber, '1B2');
+      expect((await reopened.matches()).single.isHome, isTrue);
       await reopened.close();
     } finally {
       await directory.delete(recursive: true);
@@ -109,6 +112,7 @@ void main() {
           meet: '2026-10-03 09:30',
           location: 'Home field',
           fieldNumber: '1B2',
+          isHome: false,
           deadline: '2026-10-01 18:00',
         );
         await store.addMatch(
@@ -117,6 +121,7 @@ void main() {
           meet: '2026-10-10 09:30',
           location: 'Away field',
           fieldNumber: '2',
+          isHome: false,
           deadline: '2026-10-08 18:00',
         );
         await store.setAttendance(first, sam, 1);
@@ -135,4 +140,89 @@ void main() {
       }
     },
   );
+
+  test('attendance can be acknowledged, cancelled, and cleared', () async {
+    sqfliteFfiInit();
+    final directory = await Directory.systemTemp.createTemp(
+      'rkavic-attendance-',
+    );
+    try {
+      final store = await TeamStore.openAt(
+        path.join(directory.path, 'team.db'),
+        databaseFactoryFfi,
+      );
+      final playerId = await store.addPlayer('Sam', 'Alex');
+      final matchId = await store.addMatch(
+        title: 'Lions',
+        kickoff: '2026-10-03 10:00',
+        meet: '2026-10-03 09:30',
+        location: 'Home field',
+        fieldNumber: '1B2',
+        isHome: false,
+        deadline: '2026-10-01 18:00',
+      );
+
+      await store.setAttendance(matchId, playerId, 1);
+      expect(await store.attendance(matchId), {playerId: 1});
+
+      await store.setAttendance(matchId, playerId, 2);
+      expect(await store.attendance(matchId), {playerId: 2});
+
+      await store.setAttendance(matchId, playerId, 0);
+      expect(await store.attendance(matchId), isEmpty);
+
+      await store.close();
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
+
+  test('home matches receive reusable duty shifts with descriptions', () async {
+    sqfliteFfiInit();
+    final directory = await Directory.systemTemp.createTemp(
+      'rkavic-home-duties-',
+    );
+    try {
+      final store = await TeamStore.openAt(
+        path.join(directory.path, 'team.db'),
+        databaseFactoryFfi,
+      );
+      final templateId = await store.addDutyTemplate(
+        'Field setup',
+        'Place goals, flags, and cones before kickoff.',
+      );
+      final homeMatch = await store.addMatch(
+        title: 'Lions',
+        kickoff: '2026-10-03 10:00',
+        meet: '2026-10-03 09:30',
+        location: 'Home field',
+        fieldNumber: '1B2',
+        isHome: true,
+        deadline: '2026-10-01 18:00',
+      );
+      await store.addMatch(
+        title: 'Tigers',
+        kickoff: '2026-10-10 10:00',
+        meet: '2026-10-10 09:30',
+        location: 'Away field',
+        fieldNumber: '2',
+        isHome: false,
+        deadline: '2026-10-08 18:00',
+      );
+
+      final homeDuties = await store.duties(homeMatch);
+      expect(homeDuties.single.templateId, templateId);
+      expect(homeDuties.single.title, 'Field setup');
+      expect(
+        homeDuties.single.description,
+        'Place goals, flags, and cones before kickoff.',
+      );
+
+      await store.addTemplateDutiesForMatch(homeMatch);
+      expect(await store.duties(homeMatch), hasLength(1));
+      await store.close();
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
 }

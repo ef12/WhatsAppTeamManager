@@ -8,28 +8,32 @@ class TeamBackup {
     required this.matches,
     required this.attendance,
     required this.duties,
+    required this.dutyTemplates,
   });
 
   static const format = 'rkavic-team-manager';
-  static const version = 1;
+  static const version = 2;
 
   final DateTime exportedAt;
   final List<Map<String, Object?>> players;
   final List<Map<String, Object?>> matches;
   final List<Map<String, Object?>> attendance;
   final List<Map<String, Object?>> duties;
+  final List<Map<String, Object?>> dutyTemplates;
 
   factory TeamBackup.capture({
     required List<Map<String, Object?>> players,
     required List<Map<String, Object?>> matches,
     required List<Map<String, Object?>> attendance,
     required List<Map<String, Object?>> duties,
+    required List<Map<String, Object?>> dutyTemplates,
   }) => TeamBackup._(
     exportedAt: DateTime.now().toUtc(),
     players: players,
     matches: matches,
     attendance: attendance,
     duties: duties,
+    dutyTemplates: dutyTemplates,
   );
 
   String toJsonString() => const JsonEncoder.withIndent('  ').convert({
@@ -40,15 +44,17 @@ class TeamBackup {
     'matches': matches,
     'attendance': attendance,
     'duties': duties,
+    'dutyTemplates': dutyTemplates,
   });
 
   factory TeamBackup.fromJsonString(String source) {
     final decoded = jsonDecode(source);
     if (decoded is! Map<String, dynamic> ||
         decoded['format'] != format ||
-        decoded['version'] != version) {
+        (decoded['version'] != 1 && decoded['version'] != version)) {
       throw const FormatException('This is not a supported RKAVIC backup.');
     }
+    final decodedVersion = decoded['version'] as int;
     final exportedAt = DateTime.tryParse(
       decoded['exportedAt'] is String ? decoded['exportedAt'] as String : '',
     );
@@ -56,33 +62,58 @@ class TeamBackup {
       throw const FormatException('The backup date is invalid.');
     }
 
+    final matches = _rows(decoded['matches'], 'matches', {
+      'id',
+      'title',
+      'date',
+      'meet',
+      'location',
+      'field_number',
+      if (decodedVersion >= 2) 'is_home',
+      'deadline',
+      'rkavic_score',
+      'opponent_score',
+      'done',
+    });
+    if (decodedVersion == 1) {
+      for (final row in matches) {
+        row['is_home'] = 0;
+      }
+    }
+
+    final duties = _rows(decoded['duties'], 'duties', {
+      'id',
+      'match_id',
+      if (decodedVersion >= 2) 'template_id',
+      'title',
+      if (decodedVersion >= 2) 'description',
+      'player_id',
+      'done',
+    });
+    if (decodedVersion == 1) {
+      for (final row in duties) {
+        row['template_id'] = null;
+        row['description'] = '';
+      }
+    }
+
     final backup = TeamBackup._(
       exportedAt: exportedAt,
       players: _rows(decoded['players'], 'players', {'id', 'name', 'parent'}),
-      matches: _rows(decoded['matches'], 'matches', {
-        'id',
-        'title',
-        'date',
-        'meet',
-        'location',
-        'field_number',
-        'deadline',
-        'rkavic_score',
-        'opponent_score',
-        'done',
-      }),
+      matches: matches,
       attendance: _rows(decoded['attendance'], 'attendance', {
         'match_id',
         'player_id',
         'status',
       }),
-      duties: _rows(decoded['duties'], 'duties', {
-        'id',
-        'match_id',
-        'title',
-        'player_id',
-        'done',
-      }),
+      duties: duties,
+      dutyTemplates: decodedVersion == 1
+          ? const []
+          : _rows(decoded['dutyTemplates'], 'duty templates', {
+              'id',
+              'title',
+              'description',
+            }),
     );
     backup._validate();
     return backup;
@@ -154,6 +185,7 @@ class TeamBackup {
       ]) {
         _string(row, key);
       }
+      _flag(row, 'is_home');
       _flag(row, 'done');
       final ours = row['rkavic_score'];
       final theirs = row['opponent_score'];
@@ -191,7 +223,24 @@ class TeamBackup {
         throw const FormatException('Invalid duty player in backup.');
       }
       _string(row, 'title');
+      _string(row, 'description');
       _flag(row, 'done');
+    }
+
+    final templateIds = <int>{};
+    for (final row in dutyTemplates) {
+      if (!templateIds.add(_id(row, 'id'))) {
+        throw const FormatException('Duplicate duty template in backup.');
+      }
+      _string(row, 'title');
+      _string(row, 'description');
+    }
+
+    for (final row in duties) {
+      final templateId = _optionalId(row, 'template_id');
+      if (templateId != null && !templateIds.contains(templateId)) {
+        throw const FormatException('Invalid duty template in backup.');
+      }
     }
   }
 }

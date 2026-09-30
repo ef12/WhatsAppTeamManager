@@ -78,8 +78,13 @@ String dutiesDraft(TeamMatch match, List<Player> players, List<Duty> duties) {
         return '• ${duty.title}: $who';
       })
       .join('\n');
+  final details = duties
+      .where((duty) => duty.description.isNotEmpty)
+      .map((duty) => '${duty.title}: ${duty.description}')
+      .join('\n');
   return '🟠 Match duties · ${match.title} (${match.kickoff})\n'
       '${lines.isEmpty ? 'No duties assigned yet.' : lines}\n'
+      '${details.isEmpty ? '' : '\nDetails:\n$details\n'}'
       'If unavailable, please arrange a replacement and inform me.';
 }
 

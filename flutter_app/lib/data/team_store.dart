@@ -27,6 +27,7 @@ class TeamMatch {
     this.meet,
     this.location,
     this.fieldNumber,
+    this.isHome,
     this.deadline,
     this.rkavicScore,
     this.opponentScore,
@@ -39,6 +40,7 @@ class TeamMatch {
   final String meet;
   final String location;
   final String fieldNumber;
+  final bool isHome;
   final String deadline;
   final int? rkavicScore;
   final int? opponentScore;
@@ -67,6 +69,7 @@ class TeamMatch {
     row['meet'] as String,
     row['location'] as String,
     row['field_number'] as String,
+    row['is_home'] == 1,
     row['deadline'] as String,
     row['rkavic_score'] as int?,
     row['opponent_score'] as int?,
@@ -75,18 +78,46 @@ class TeamMatch {
 }
 
 class Duty {
-  const Duty(this.id, this.title, this.playerId, this.done);
+  const Duty(
+    this.id,
+    this.matchId,
+    this.templateId,
+    this.title,
+    this.description,
+    this.playerId,
+    this.done,
+  );
 
   final int id;
+  final int matchId;
+  final int? templateId;
   final String title;
+  final String description;
   final int? playerId;
   final bool done;
 
   factory Duty.fromRow(Map<String, Object?> row) => Duty(
     row['id'] as int,
+    row['match_id'] as int,
+    row['template_id'] as int?,
     row['title'] as String,
+    row['description'] as String,
     row['player_id'] as int?,
     row['done'] == 1,
+  );
+}
+
+class DutyTemplate {
+  const DutyTemplate(this.id, this.title, this.description);
+
+  final int id;
+  final String title;
+  final String description;
+
+  factory DutyTemplate.fromRow(Map<String, Object?> row) => DutyTemplate(
+    row['id'] as int,
+    row['title'] as String,
+    row['description'] as String,
   );
 }
 
@@ -137,7 +168,7 @@ class TeamStore {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 3,
+        version: 4,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -146,7 +177,8 @@ class TeamStore {
           await db.execute(
             'CREATE TABLE matches(id INTEGER PRIMARY KEY,title TEXT NOT NULL,'
             'date TEXT NOT NULL,meet TEXT NOT NULL,location TEXT NOT NULL,'
-            'field_number TEXT NOT NULL DEFAULT \'\',deadline TEXT NOT NULL,'
+            'field_number TEXT NOT NULL DEFAULT \'\','
+            'is_home INTEGER NOT NULL DEFAULT 0,deadline TEXT NOT NULL,'
             'rkavic_score INTEGER,opponent_score INTEGER,'
             'done INTEGER NOT NULL DEFAULT 0)',
           );
@@ -157,7 +189,12 @@ class TeamStore {
           );
           await db.execute(
             'CREATE TABLE duties(id INTEGER PRIMARY KEY,match_id INTEGER NOT NULL,'
-            'title TEXT NOT NULL,player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)',
+            'template_id INTEGER,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\','
+            'player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)',
+          );
+          await db.execute(
+            'CREATE TABLE duty_templates(id INTEGER PRIMARY KEY,'
+            'title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\')',
           );
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -177,6 +214,36 @@ class TeamStore {
               "ALTER TABLE matches ADD COLUMN field_number TEXT NOT NULL DEFAULT ''",
             );
           }
+          if (oldVersion < 4) {
+            await db.execute(
+              'ALTER TABLE matches ADD COLUMN is_home INTEGER NOT NULL DEFAULT 0',
+            );
+            final dutyTables = await db.query(
+              'sqlite_master',
+              columns: ['name'],
+              where: 'type=? AND name=?',
+              whereArgs: ['table', 'duties'],
+            );
+            if (dutyTables.isEmpty) {
+              await db.execute(
+                'CREATE TABLE duties(id INTEGER PRIMARY KEY,'
+                'match_id INTEGER NOT NULL,template_id INTEGER,'
+                'title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\','
+                'player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)',
+              );
+            } else {
+              await db.execute(
+                'ALTER TABLE duties ADD COLUMN template_id INTEGER',
+              );
+              await db.execute(
+                "ALTER TABLE duties ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+              );
+            }
+            await db.execute(
+              'CREATE TABLE IF NOT EXISTS duty_templates(id INTEGER PRIMARY KEY,'
+              'title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\')',
+            );
+          }
         },
       ),
     );
@@ -191,12 +258,19 @@ class TeamStore {
       matches: await txn.query('matches', orderBy: 'id'),
       attendance: await txn.query('attendance', orderBy: 'match_id, player_id'),
       duties: await txn.query('duties', orderBy: 'id'),
+      dutyTemplates: await txn.query('duty_templates', orderBy: 'id'),
     ),
   );
 
   Future<void> replaceWithBackup(TeamBackup backup) =>
       _db.transaction((txn) async {
-        for (final table in ['attendance', 'duties', 'matches', 'players']) {
+        for (final table in [
+          'attendance',
+          'duties',
+          'duty_templates',
+          'matches',
+          'players',
+        ]) {
           await txn.delete(table);
         }
         for (final row in backup.players) {
@@ -210,6 +284,9 @@ class TeamStore {
         }
         for (final row in backup.duties) {
           await txn.insert('duties', row);
+        }
+        for (final row in backup.dutyTemplates) {
+          await txn.insert('duty_templates', row);
         }
       });
 
@@ -254,14 +331,22 @@ class TeamStore {
     required String meet,
     required String location,
     required String fieldNumber,
+    required bool isHome,
     required String deadline,
-  }) => _db.insert('matches', {
-    'title': title,
-    'date': kickoff,
-    'meet': meet,
-    'location': location,
-    'field_number': fieldNumber,
-    'deadline': deadline,
+  }) => _db.transaction((txn) async {
+    final matchId = await txn.insert('matches', {
+      'title': title,
+      'date': kickoff,
+      'meet': meet,
+      'location': location,
+      'field_number': fieldNumber,
+      'is_home': isHome ? 1 : 0,
+      'deadline': deadline,
+    });
+    if (isHome) {
+      await _addTemplateDuties(txn, matchId);
+    }
+    return matchId;
   });
 
   Future<void> updateMatch(
@@ -271,9 +356,10 @@ class TeamStore {
     required String meet,
     required String location,
     required String fieldNumber,
+    required bool isHome,
     required String deadline,
-  }) async {
-    await _db.update(
+  }) => _db.transaction((txn) async {
+    await txn.update(
       'matches',
       {
         'title': title,
@@ -281,12 +367,16 @@ class TeamStore {
         'meet': meet,
         'location': location,
         'field_number': fieldNumber,
+        'is_home': isHome ? 1 : 0,
         'deadline': deadline,
       },
       where: 'id=?',
       whereArgs: [id],
     );
-  }
+    if (isHome) {
+      await _addTemplateDuties(txn, id);
+    }
+  });
 
   Future<void> setResult(int id, int? rkavic, int? opponent, bool done) async {
     await _db.update(
@@ -351,6 +441,14 @@ class TeamStore {
   }
 
   Future<void> setAttendance(int matchId, int playerId, int status) async {
+    if (status == 0) {
+      await _db.delete(
+        'attendance',
+        where: 'match_id=? AND player_id=?',
+        whereArgs: [matchId, playerId],
+      );
+      return;
+    }
     await _db.insert('attendance', {
       'match_id': matchId,
       'player_id': playerId,
@@ -365,8 +463,71 @@ class TeamStore {
     orderBy: 'id',
   )).map(Duty.fromRow).toList();
 
-  Future<int> addDuty(int matchId, String title) =>
-      _db.insert('duties', {'match_id': matchId, 'title': title, 'done': 0});
+  Future<List<DutyTemplate>> dutyTemplates() async => (await _db.query(
+    'duty_templates',
+    orderBy: 'title COLLATE NOCASE, id',
+  )).map(DutyTemplate.fromRow).toList();
+
+  Future<int> addDutyTemplate(String title, String description) => _db.insert(
+    'duty_templates',
+    {'title': title, 'description': description},
+  );
+
+  Future<void> updateDutyTemplate(
+    int id,
+    String title,
+    String description,
+  ) async {
+    await _db.update(
+      'duty_templates',
+      {'title': title, 'description': description},
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteDutyTemplate(int id) => _db.transaction((txn) async {
+    await txn.delete('duty_templates', where: 'id=?', whereArgs: [id]);
+    await txn.update(
+      'duties',
+      {'template_id': null},
+      where: 'template_id=?',
+      whereArgs: [id],
+    );
+  });
+
+  Future<void> addTemplateDutiesForMatch(int matchId) =>
+      _db.transaction((txn) => _addTemplateDuties(txn, matchId));
+
+  Future<void> _addTemplateDuties(DatabaseExecutor txn, int matchId) async {
+    final templates = await txn.query('duty_templates', orderBy: 'id');
+    for (final template in templates) {
+      final templateId = template['id'] as int;
+      final existing = await txn.query(
+        'duties',
+        columns: ['id'],
+        where: 'match_id=? AND template_id=?',
+        whereArgs: [matchId, templateId],
+        limit: 1,
+      );
+      if (existing.isNotEmpty) continue;
+      await txn.insert('duties', {
+        'match_id': matchId,
+        'template_id': templateId,
+        'title': template['title'] as String,
+        'description': template['description'] as String,
+        'done': 0,
+      });
+    }
+  }
+
+  Future<int> addDuty(int matchId, String title, String description) =>
+      _db.insert('duties', {
+        'match_id': matchId,
+        'title': title,
+        'description': description,
+        'done': 0,
+      });
 
   Future<void> assignDuty(int id, int? playerId) async {
     await _db.update(

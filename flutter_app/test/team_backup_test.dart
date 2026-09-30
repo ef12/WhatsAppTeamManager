@@ -25,10 +25,20 @@ void main() {
           meet: '2026-10-03 09:30',
           location: 'Sportpark De Meern',
           fieldNumber: '1B2',
+          isHome: true,
           deadline: '2026-10-01 18:00',
         );
         await source.setAttendance(matchId, playerId, 1);
-        final dutyId = await source.addDuty(matchId, 'Field setup');
+        await source.addDutyTemplate(
+          'Canteen shift',
+          'Help with drinks after the match.',
+        );
+        await source.addTemplateDutiesForMatch(matchId);
+        final dutyId = await source.addDuty(
+          matchId,
+          'Field setup',
+          'Place goals, flags, and cones before kickoff.',
+        );
         await source.assignDuty(dutyId, playerId);
         await source.setDutyDone(dutyId, true);
         await source.setResult(matchId, 2, 1, true);
@@ -46,12 +56,24 @@ void main() {
         final restored = (await target.matches()).single;
         expect(restored.location, 'Sportpark De Meern');
         expect(restored.fieldNumber, '1B2');
+        expect(restored.isHome, isTrue);
         expect(restored.rkavicScore, 2);
         expect(restored.opponentScore, 1);
         expect(restored.done, isTrue);
         expect(await target.attendance(matchId), {playerId: 1});
-        final duty = (await target.duties(matchId)).single;
+        final templates = await target.dutyTemplates();
+        expect(templates.single.title, 'Canteen shift');
+        expect(
+          templates.single.description,
+          'Help with drinks after the match.',
+        );
+        final duties = await target.duties(matchId);
+        final duty = duties.singleWhere((duty) => duty.title == 'Field setup');
         expect(duty.title, 'Field setup');
+        expect(
+          duty.description,
+          'Place goals, flags, and cones before kickoff.',
+        );
         expect(duty.playerId, playerId);
         expect(duty.done, isTrue);
         await target.close();

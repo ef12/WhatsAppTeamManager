@@ -10,6 +10,7 @@ void main() {
     '2026-10-03 09:30',
     'Home field',
     '1B2',
+    true,
     '2026-10-01 18:00',
     null,
     null,
@@ -25,9 +26,18 @@ void main() {
 
   test('duty draft addresses a parent when available', () {
     final draft = dutiesDraft(match, players, [
-      const Duty(4, 'Field setup', 1, false),
+      const Duty(
+        4,
+        1,
+        null,
+        'Field setup',
+        'Place goals, flags, and cones before kickoff.',
+        1,
+        false,
+      ),
     ]);
     expect(draft, contains('Field setup: Alex'));
+    expect(draft, contains('Place goals, flags, and cones before kickoff.'));
   });
 
   test('venue drafts include the field number', () {
@@ -52,6 +62,7 @@ void main() {
       '2026-10-03 09:30',
       'Home field',
       '1B2',
+      true,
       '2026-10-01 18:00',
       3,
       1,
@@ -72,6 +83,7 @@ void main() {
       '2026-10-03 09:30',
       'Sportpark De Meern, Utrecht',
       '1B2',
+      false,
       '2026-10-01 18:00',
       null,
       null,
@@ -94,6 +106,7 @@ void main() {
       '2026-10-03 09:30',
       ' ',
       '1B2',
+      true,
       '2026-10-01 18:00',
       null,
       null,

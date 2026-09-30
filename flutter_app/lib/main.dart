@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -16,11 +18,42 @@ const forest = Color(0xFFF58221);
 const lime = Color(0xFFFFF3E6);
 const canvas = Color(0xFFFFF8F1);
 final dateFormat = DateFormat('yyyy-MM-dd HH:mm');
+File? errorLogFile;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final directory = await getApplicationSupportDirectory();
+  errorLogFile = File(
+    '${directory.path}${Platform.pathSeparator}rkavic_error.log',
+  );
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    _writeErrorLog(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    _writeErrorLog(
+      FlutterErrorDetails(exception: error, stack: stack, library: 'dart:ui'),
+    );
+    return false;
+  };
   final store = await TeamStore.open();
   runApp(TeamManagerApp(store: store));
+}
+
+void _writeErrorLog(FlutterErrorDetails details) {
+  try {
+    errorLogFile?.writeAsStringSync(
+      [
+        '--- ${DateTime.now().toIso8601String()} ---',
+        details.toString(),
+        '',
+      ].join('\n'),
+      mode: FileMode.append,
+      flush: true,
+    );
+  } catch (_) {
+    // Logging must never make the original Flutter error worse.
+  }
 }
 
 class TeamManagerApp extends StatelessWidget {
@@ -63,6 +96,7 @@ class _TeamHomeState extends State<TeamHome> {
   int? selectedMatchId;
   List<Player> players = [];
   List<TeamMatch> matches = [];
+  List<DutyTemplate> dutyTemplates = [];
   bool loading = true;
 
   @override
@@ -75,11 +109,13 @@ class _TeamHomeState extends State<TeamHome> {
     final values = await Future.wait([
       widget.store.players(),
       widget.store.matches(),
+      widget.store.dutyTemplates(),
     ]);
     if (!mounted) return;
     setState(() {
       players = values[0] as List<Player>;
       matches = values[1] as List<TeamMatch>;
+      dutyTemplates = values[2] as List<DutyTemplate>;
       loading = false;
     });
   }
@@ -108,6 +144,8 @@ class _TeamHomeState extends State<TeamHome> {
         ? _matches()
         : page == 2
         ? _players()
+        : page == 3
+        ? _duties()
         : _backupPage();
     return Scaffold(
       body: Row(
@@ -180,6 +218,11 @@ class _TeamHomeState extends State<TeamHome> {
                     label: 'Players',
                   ),
                   NavigationDestination(
+                    icon: Icon(Icons.assignment_outlined),
+                    selectedIcon: Icon(Icons.assignment),
+                    label: 'Duties',
+                  ),
+                  NavigationDestination(
                     icon: Icon(Icons.save_alt_outlined),
                     selectedIcon: Icon(Icons.save_alt),
                     label: 'Backup',
@@ -202,7 +245,8 @@ class _TeamHomeState extends State<TeamHome> {
         _navItem(0, Icons.space_dashboard_outlined, 'Overview'),
         _navItem(1, Icons.sports_soccer_outlined, 'Matches'),
         _navItem(2, Icons.groups_outlined, 'Players'),
-        _navItem(3, Icons.save_alt_outlined, 'Backup'),
+        _navItem(3, Icons.assignment_outlined, 'Duties'),
+        _navItem(4, Icons.save_alt_outlined, 'Backup'),
         const Spacer(),
         const Padding(
           padding: EdgeInsets.all(14),
@@ -346,7 +390,7 @@ class _TeamHomeState extends State<TeamHome> {
                   Text(
                     upcoming.isEmpty
                         ? 'Create a match to get started.'
-                        : '${upcoming.first.kickoff}  •  ${upcoming.first.venue}',
+                        : '${upcoming.first.kickoff} | ${upcoming.first.venue}',
                     style: const TextStyle(color: Color(0xFFFFE7CD)),
                   ),
                 ],
@@ -415,8 +459,9 @@ class _TeamHomeState extends State<TeamHome> {
               ),
               const SizedBox(height: 8),
               Text(
-                '${players.length} players and ${matches.length} matches, '
-                'including attendance, duties, results, and field numbers.',
+                '${players.length} players, ${matches.length} matches, and '
+                '${dutyTemplates.length} duty templates, including attendance, '
+                'shift assignments, results, and field numbers.',
               ),
               const SizedBox(height: 18),
               FilledButton.icon(
@@ -681,7 +726,7 @@ class _TeamHomeState extends State<TeamHome> {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    '${match.kickoff}  •  ${match.venue}',
+                    '${match.kickoff} | ${match.venue}',
                     style: const TextStyle(color: Color(0xFF6F5B4A)),
                   ),
                 ],
@@ -741,12 +786,140 @@ class _TeamHomeState extends State<TeamHome> {
     ],
   );
 
+  Widget _duties() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _heading(
+        'Match day roles',
+        'Duty manager',
+        '${dutyTemplates.length} reusable duties for home matches',
+        action: FilledButton.icon(
+          onPressed: () => _editDutyTemplate(),
+          icon: const Icon(Icons.add_task_outlined),
+          label: const Text('Add duty'),
+        ),
+      ),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              const CircleAvatar(
+                backgroundColor: lime,
+                child: Icon(Icons.home_work_outlined, color: forest),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Text(
+                  'These duties are copied into every home match so you can assign shifts per match.',
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final homeMatches = matches.where((match) => match.isHome);
+                  for (final match in homeMatches) {
+                    await widget.store.addTemplateDutiesForMatch(match.id);
+                  }
+                  if (!mounted) return;
+                  setState(() {});
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Home match duties refreshed.'),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.sync_outlined),
+                label: const Text('Refresh home matches'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 16),
+      if (dutyTemplates.isEmpty)
+        _empty(
+          'No duties defined',
+          'Add the recurring home match duties and descriptions.',
+          Icons.assignment_outlined,
+        )
+      else
+        Card(
+          child: Column(
+            children: dutyTemplates
+                .map(
+                  (duty) => Column(
+                    children: [
+                      ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 8,
+                        ),
+                        leading: const CircleAvatar(
+                          backgroundColor: Color(0xFFFFE7D0),
+                          child: Icon(Icons.assignment_outlined, color: forest),
+                        ),
+                        title: Text(
+                          duty.title,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Text(
+                          duty.description.isEmpty
+                              ? 'No description yet'
+                              : duty.description,
+                        ),
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (value) async {
+                            if (value == 'edit') {
+                              await _afterPopupDismissed();
+                              if (!mounted) return;
+                              await _editDutyTemplate(duty);
+                            }
+                            if (value == 'delete' &&
+                                await _confirmDutyTemplateDelete(duty)) {
+                              await widget.store.deleteDutyTemplate(duty.id);
+                              await refresh();
+                            }
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: 'edit', child: Text('Edit')),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text('Delete'),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (duty != dutyTemplates.last) const Divider(height: 1),
+                    ],
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+    ],
+  );
+
+  Future<bool> _confirmDutyTemplateDelete(DutyTemplate duty) async {
+    await _afterPopupDismissed();
+    if (!mounted) return false;
+    return _confirm(
+      'Delete this duty?',
+      'Existing match shifts keep their text, but they will no longer be linked to this reusable duty.',
+    );
+  }
+
+  Future<void> _afterPopupDismissed() async {
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
   Widget _playerTile(Player player, ParticipationSummary? participation) {
     final summary = participation == null || participation.total == 0
         ? 'No events tracked yet'
         : '${participation.present}/${participation.total} joined'
-              ' · ${participation.absent} absent'
-              ' · ${participation.noResponse} no reply';
+              ' | ${participation.absent} absent'
+              ' | ${participation.noResponse} no reply';
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
       leading: CircleAvatar(
@@ -856,6 +1029,75 @@ class _TeamHomeState extends State<TeamHome> {
     }
   }
 
+  Future<void> _editDutyTemplate([DutyTemplate? duty]) async {
+    final title = TextEditingController(text: duty?.title);
+    final description = TextEditingController(text: duty?.description);
+    final key = GlobalKey<FormState>();
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(duty == null ? 'Add duty' : 'Edit duty'),
+        content: SizedBox(
+          width: 460,
+          child: Form(
+            key: key,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: title,
+                  autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Duty title'),
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? 'Enter a duty title'
+                      : null,
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: description,
+                  minLines: 3,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Description',
+                    hintText: 'What needs to happen during this shift?',
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, key.currentState!.validate()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (saved == true) {
+      if (duty == null) {
+        await widget.store.addDutyTemplate(
+          title.text.trim(),
+          description.text.trim(),
+        );
+      } else {
+        await widget.store.updateDutyTemplate(
+          duty.id,
+          title.text.trim(),
+          description.text.trim(),
+        );
+      }
+      await refresh();
+    }
+    title.dispose();
+    description.dispose();
+  }
+
   Future<bool> _confirm(String title, String detail) async =>
       await showDialog<bool>(
         context: context,
@@ -880,6 +1122,7 @@ class _TeamHomeState extends State<TeamHome> {
     final title = TextEditingController(text: match?.title);
     final location = TextEditingController(text: match?.location);
     final fieldNumber = TextEditingController(text: match?.fieldNumber);
+    var isHome = match?.isHome ?? false;
     DateTime kickoff =
         DateTime.tryParse(match?.kickoff ?? '') ??
         DateTime.now().add(const Duration(days: 7));
@@ -948,6 +1191,17 @@ class _TeamHomeState extends State<TeamHome> {
                       ),
                     ),
                     const SizedBox(height: 12),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: isHome,
+                      title: const Text('Home match'),
+                      subtitle: const Text(
+                        'Copies the reusable duties into this match.',
+                      ),
+                      onChanged: (value) =>
+                          setDialogState(() => isHome = value),
+                    ),
+                    const SizedBox(height: 12),
                     _dateTile('Kickoff', kickoff, () async {
                       final value = await pick(context, kickoff);
                       if (value != null) setDialogState(() => kickoff = value);
@@ -986,6 +1240,7 @@ class _TeamHomeState extends State<TeamHome> {
         meet: dateFormat.format(meet),
         location: location.text.trim(),
         fieldNumber: fieldNumber.text.trim(),
+        isHome: isHome,
         deadline: dateFormat.format(deadline),
       );
       if (match == null) {
@@ -995,6 +1250,7 @@ class _TeamHomeState extends State<TeamHome> {
           meet: args.meet,
           location: args.location,
           fieldNumber: args.fieldNumber,
+          isHome: args.isHome,
           deadline: args.deadline,
         );
         await refresh();
@@ -1007,6 +1263,7 @@ class _TeamHomeState extends State<TeamHome> {
           meet: args.meet,
           location: args.location,
           fieldNumber: args.fieldNumber,
+          isHome: args.isHome,
           deadline: args.deadline,
         );
         await refresh();
@@ -1216,7 +1473,7 @@ class _TeamHomeState extends State<TeamHome> {
           _heading(
             match.done ? 'Completed match' : 'Match day',
             match.title,
-            '${match.kickoff}  •  ${match.venue}',
+            '${match.kickoff} | ${match.venue}',
           ),
           Wrap(
             spacing: 10,
@@ -1258,6 +1515,11 @@ class _TeamHomeState extends State<TeamHome> {
             runSpacing: 16,
             children: [
               _infoCard('KICKOFF', match.kickoff, Icons.event_outlined),
+              _infoCard(
+                'MATCH TYPE',
+                match.isHome ? 'Home match' : 'Away match',
+                Icons.home_work_outlined,
+              ),
               _infoCard('MEET AT', match.meet, Icons.schedule_outlined),
               if (match.fieldNumber.isNotEmpty)
                 _infoCard('FIELD', match.fieldNumber, Icons.place_outlined),
@@ -1272,7 +1534,7 @@ class _TeamHomeState extends State<TeamHome> {
           const SizedBox(height: 28),
           _section('Attendance', null, ''),
           Text(
-            '$coming coming  •  $absent absent  •  ${players.length - coming - absent} awaiting reply',
+            '$coming coming | $absent absent | ${players.length - coming - absent} awaiting reply',
             style: const TextStyle(color: Color(0xFF6F5B4A)),
           ),
           const SizedBox(height: 12),
@@ -1313,6 +1575,7 @@ class _TeamHomeState extends State<TeamHome> {
                               p.id,
                               value ?? 0,
                             );
+                            if (!mounted) return;
                             setState(() {});
                           },
                         ),
@@ -1322,11 +1585,17 @@ class _TeamHomeState extends State<TeamHome> {
               ),
             ),
           const SizedBox(height: 28),
-          _section('Match duties', () => _addDuty(match.id), 'Add duty'),
+          _section(
+            match.isHome ? 'Home match shifts' : 'Match duties',
+            () => _addDuty(match.id),
+            'Add shift',
+          ),
           if (duties.isEmpty)
             _empty(
               'No duties yet',
-              'Add duties and assign a parent or player.',
+              match.isHome
+                  ? 'Reusable duties appear here for home matches.'
+                  : 'Add duties and assign a parent or player.',
               Icons.task_alt_outlined,
             )
           else
@@ -1342,6 +1611,7 @@ class _TeamHomeState extends State<TeamHome> {
                               duty.id,
                               value ?? false,
                             );
+                            if (!mounted) return;
                             setState(() {});
                           },
                         ),
@@ -1354,23 +1624,29 @@ class _TeamHomeState extends State<TeamHome> {
                           ),
                         ),
                         subtitle: Text(
-                          players
-                                  .where((p) => p.id == duty.playerId)
-                                  .map(
-                                    (p) => p.parent.isEmpty
-                                        ? p.name
-                                        : '${p.parent} (${p.name})',
-                                  )
-                                  .firstOrNull ??
-                              'Unassigned',
+                          [
+                            if (duty.description.isNotEmpty) duty.description,
+                            players
+                                    .where((p) => p.id == duty.playerId)
+                                    .map(
+                                      (p) => p.parent.isEmpty
+                                          ? p.name
+                                          : '${p.parent} (${p.name})',
+                                    )
+                                    .firstOrNull ??
+                                'Unassigned',
+                          ].join('\n'),
                         ),
                         trailing: PopupMenuButton<String>(
                           onSelected: (value) async {
                             if (value == 'assign') {
+                              await _afterPopupDismissed();
+                              if (!mounted) return;
                               await _assignDuty(duty);
                             }
                             if (value == 'delete') {
                               await widget.store.deleteDuty(duty.id);
+                              if (!mounted) return;
                               setState(() {});
                             }
                           },
@@ -1476,16 +1752,42 @@ class _TeamHomeState extends State<TeamHome> {
   );
 
   Future<void> _addDuty(int matchId) async {
-    final controller = TextEditingController();
-    final value = await showDialog<String>(
+    final title = TextEditingController();
+    final description = TextEditingController();
+    final key = GlobalKey<FormState>();
+    final saved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add duty'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Duty, e.g. field setup',
+        title: const Text('Add shift'),
+        content: SizedBox(
+          width: 460,
+          child: Form(
+            key: key,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: title,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Duty, e.g. field setup',
+                  ),
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? 'Enter a duty title'
+                      : null,
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: description,
+                  minLines: 3,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Description',
+                    hintText: 'What should the assigned person do?',
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
         actions: [
@@ -1494,17 +1796,24 @@ class _TeamHomeState extends State<TeamHome> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            onPressed: () =>
+                Navigator.pop(context, key.currentState!.validate()),
             child: const Text('Add'),
           ),
         ],
       ),
     );
-    if (value != null && value.isNotEmpty) {
-      await widget.store.addDuty(matchId, value);
+    if (saved == true) {
+      await widget.store.addDuty(
+        matchId,
+        title.text.trim(),
+        description.text.trim(),
+      );
+      if (!mounted) return;
       setState(() {});
     }
-    controller.dispose();
+    title.dispose();
+    description.dispose();
   }
 
   Future<void> _assignDuty(Duty duty) async {
@@ -1530,6 +1839,7 @@ class _TeamHomeState extends State<TeamHome> {
     );
     if (value != null) {
       await widget.store.assignDuty(duty.id, value == -1 ? null : value);
+      if (!mounted) return;
       setState(() {});
     }
   }
@@ -1546,7 +1856,13 @@ class _TeamHomeState extends State<TeamHome> {
       context: context,
       builder: (context) => AlertDialog(
         title: Text('$label draft'),
-        content: SizedBox(width: 490, child: SelectableText(draft)),
+        content: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 520,
+            maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+          ),
+          child: SingleChildScrollView(child: SelectableText(draft)),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
