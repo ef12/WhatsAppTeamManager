@@ -66,15 +66,7 @@ String reminderDraft(
 String dutiesDraft(TeamMatch match, List<Player> players, List<Duty> duties) {
   final lines = duties
       .map((duty) {
-        Player? player;
-        for (final candidate in players) {
-          if (candidate.id == duty.playerId) player = candidate;
-        }
-        final who = player == null
-            ? 'volunteer needed'
-            : player.parent.isEmpty
-            ? player.name
-            : player.parent;
+        final who = duty.parentName ?? 'volunteer needed';
         return '• ${duty.title}: $who';
       })
       .join('\n');

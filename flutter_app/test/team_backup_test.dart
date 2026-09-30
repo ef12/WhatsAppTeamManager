@@ -33,6 +33,7 @@ void main() {
           'Canteen shift',
           'Help with drinks after the match.',
         );
+        await source.setParentDutyRelieved('Trainer', true);
         await source.addTemplateDutiesForMatch(matchId);
         final dutyId = await source.addDuty(
           matchId,
@@ -75,7 +76,15 @@ void main() {
           'Place goals, flags, and cones before kickoff.',
         );
         expect(duty.playerId, playerId);
+        expect(duty.parentName, 'Alex');
         expect(duty.done, isTrue);
+        final summaries = await target.parentDutySummaries();
+        expect(
+          summaries
+              .singleWhere((summary) => summary.name == 'Trainer')
+              .relieved,
+          isTrue,
+        );
         await target.close();
       } finally {
         await directory.delete(recursive: true);

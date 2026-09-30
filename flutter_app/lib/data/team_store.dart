@@ -85,6 +85,7 @@ class Duty {
     this.title,
     this.description,
     this.playerId,
+    this.parentName,
     this.done,
   );
 
@@ -94,6 +95,7 @@ class Duty {
   final String title;
   final String description;
   final int? playerId;
+  final String? parentName;
   final bool done;
 
   factory Duty.fromRow(Map<String, Object?> row) => Duty(
@@ -103,6 +105,7 @@ class Duty {
     row['title'] as String,
     row['description'] as String,
     row['player_id'] as int?,
+    row['parent_name'] as String?,
     row['done'] == 1,
   );
 }
@@ -139,6 +142,22 @@ class ParticipationSummary {
   double get rate => total == 0 ? 0 : present / total;
 }
 
+class ParentDutySummary {
+  const ParentDutySummary({
+    required this.name,
+    required this.children,
+    required this.assigned,
+    required this.done,
+    required this.relieved,
+  });
+
+  final String name;
+  final List<String> children;
+  final int assigned;
+  final int done;
+  final bool relieved;
+}
+
 class TeamStore {
   TeamStore._(this._db);
 
@@ -168,7 +187,7 @@ class TeamStore {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 4,
+        version: 5,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -190,11 +209,14 @@ class TeamStore {
           await db.execute(
             'CREATE TABLE duties(id INTEGER PRIMARY KEY,match_id INTEGER NOT NULL,'
             'template_id INTEGER,title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\','
-            'player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)',
+            'player_id INTEGER,parent_name TEXT,done INTEGER NOT NULL DEFAULT 0)',
           );
           await db.execute(
             'CREATE TABLE duty_templates(id INTEGER PRIMARY KEY,'
             'title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\')',
+          );
+          await db.execute(
+            'CREATE TABLE parent_duty_exemptions(parent_name TEXT PRIMARY KEY)',
           );
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -244,6 +266,34 @@ class TeamStore {
               'title TEXT NOT NULL,description TEXT NOT NULL DEFAULT \'\')',
             );
           }
+          if (oldVersion < 5) {
+            final dutyColumns = await db.rawQuery('PRAGMA table_info(duties)');
+            final hasParentName = dutyColumns.any(
+              (column) => column['name'] == 'parent_name',
+            );
+            if (!hasParentName) {
+              await db.execute(
+                'ALTER TABLE duties ADD COLUMN parent_name TEXT',
+              );
+            }
+            await db.execute(
+              'CREATE TABLE IF NOT EXISTS parent_duty_exemptions('
+              'parent_name TEXT PRIMARY KEY)',
+            );
+            final playerTables = await db.query(
+              'sqlite_master',
+              columns: ['name'],
+              where: 'type=? AND name=?',
+              whereArgs: ['table', 'players'],
+            );
+            if (playerTables.isNotEmpty) {
+              await db.execute(
+                'UPDATE duties SET parent_name=('
+                'SELECT parent FROM players WHERE players.id=duties.player_id'
+                ') WHERE parent_name IS NULL AND player_id IS NOT NULL',
+              );
+            }
+          }
         },
       ),
     );
@@ -259,6 +309,10 @@ class TeamStore {
       attendance: await txn.query('attendance', orderBy: 'match_id, player_id'),
       duties: await txn.query('duties', orderBy: 'id'),
       dutyTemplates: await txn.query('duty_templates', orderBy: 'id'),
+      parentDutyExemptions: await txn.query(
+        'parent_duty_exemptions',
+        orderBy: 'parent_name COLLATE NOCASE',
+      ),
     ),
   );
 
@@ -268,6 +322,7 @@ class TeamStore {
           'attendance',
           'duties',
           'duty_templates',
+          'parent_duty_exemptions',
           'matches',
           'players',
         ]) {
@@ -287,6 +342,9 @@ class TeamStore {
         }
         for (final row in backup.dutyTemplates) {
           await txn.insert('duty_templates', row);
+        }
+        for (final row in backup.parentDutyExemptions) {
+          await txn.insert('parent_duty_exemptions', row);
         }
       });
 
@@ -308,11 +366,37 @@ class TeamStore {
   }
 
   Future<void> deletePlayer(int id) => _db.transaction((txn) async {
+    final playerRows = await txn.query(
+      'players',
+      columns: ['parent'],
+      where: 'id=?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    final parent = playerRows.isEmpty
+        ? ''
+        : (playerRows.first['parent'] as String).trim();
     await txn.delete('players', where: 'id=?', whereArgs: [id]);
     await txn.delete('attendance', where: 'player_id=?', whereArgs: [id]);
     await txn.rawUpdate('UPDATE duties SET player_id=NULL WHERE player_id=?', [
       id,
     ]);
+    if (parent.isNotEmpty) {
+      final remaining = await txn.query(
+        'players',
+        columns: ['id'],
+        where: 'parent=?',
+        whereArgs: [parent],
+        limit: 1,
+      );
+      if (remaining.isEmpty) {
+        await txn.delete(
+          'parent_duty_exemptions',
+          where: 'parent_name=?',
+          whereArgs: [parent],
+        );
+      }
+    }
   });
 
   Future<List<TeamMatch>> matches() async => (await _db.query(
@@ -468,6 +552,63 @@ class TeamStore {
     orderBy: 'title COLLATE NOCASE, id',
   )).map(DutyTemplate.fromRow).toList();
 
+  Future<List<ParentDutySummary>> parentDutySummaries() async {
+    final players = await this.players();
+    final byParent = <String, List<String>>{};
+    for (final player in players) {
+      final parent = player.parent.trim();
+      if (parent.isEmpty) continue;
+      byParent.putIfAbsent(parent, () => <String>[]).add(player.name);
+    }
+    final dutyRows = await _db.rawQuery(
+      'SELECT parent_name, done, COUNT(*) AS total FROM duties '
+      'WHERE parent_name IS NOT NULL AND parent_name != \'\' '
+      'GROUP BY parent_name, done',
+    );
+    final counts = <String, ({int assigned, int done})>{};
+    for (final row in dutyRows) {
+      final parent = row['parent_name'] as String;
+      final previous = counts[parent] ?? (assigned: 0, done: 0);
+      final total = row['total'] as int;
+      counts[parent] = (
+        assigned: previous.assigned + total,
+        done: previous.done + ((row['done'] as int) == 1 ? total : 0),
+      );
+    }
+    final exemptionRows = await _db.query('parent_duty_exemptions');
+    final relieved = exemptionRows
+        .map((row) => row['parent_name'] as String)
+        .toSet();
+    final parents = {...byParent.keys, ...counts.keys, ...relieved}.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return [
+      for (final parent in parents)
+        ParentDutySummary(
+          name: parent,
+          children: List<String>.of(byParent[parent] ?? const [])..sort(),
+          assigned: counts[parent]?.assigned ?? 0,
+          done: counts[parent]?.done ?? 0,
+          relieved: relieved.contains(parent),
+        ),
+    ];
+  }
+
+  Future<void> setParentDutyRelieved(String parentName, bool relieved) async {
+    final normalized = parentName.trim();
+    if (normalized.isEmpty) return;
+    if (relieved) {
+      await _db.insert('parent_duty_exemptions', {
+        'parent_name': normalized,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      return;
+    }
+    await _db.delete(
+      'parent_duty_exemptions',
+      where: 'parent_name=?',
+      whereArgs: [normalized],
+    );
+  }
+
   Future<int> addDutyTemplate(String title, String description) => _db.insert(
     'duty_templates',
     {'title': title, 'description': description},
@@ -516,9 +657,65 @@ class TeamStore {
         'template_id': templateId,
         'title': template['title'] as String,
         'description': template['description'] as String,
+        'parent_name': await _nextDutyParent(txn, matchId),
         'done': 0,
       });
     }
+  }
+
+  Future<String?> _nextDutyParent(DatabaseExecutor txn, int matchId) async {
+    final playerRows = await txn.query(
+      'players',
+      columns: ['parent'],
+      where: 'parent != ?',
+      whereArgs: [''],
+      orderBy: 'parent COLLATE NOCASE',
+    );
+    final parentNames = <String>{};
+    for (final row in playerRows) {
+      final parent = (row['parent'] as String).trim();
+      if (parent.isNotEmpty) parentNames.add(parent);
+    }
+    if (parentNames.isEmpty) return null;
+
+    final exemptionRows = await txn.query('parent_duty_exemptions');
+    final relieved = exemptionRows
+        .map((row) => row['parent_name'] as String)
+        .toSet();
+    final eligible =
+        parentNames.where((parent) => !relieved.contains(parent)).toList()
+          ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    if (eligible.isEmpty) return null;
+
+    final countRows = await txn.rawQuery(
+      'SELECT parent_name, COUNT(*) AS total FROM duties '
+      'WHERE parent_name IS NOT NULL AND parent_name != \'\' '
+      'GROUP BY parent_name',
+    );
+    final counts = {
+      for (final row in countRows)
+        row['parent_name'] as String: row['total'] as int,
+    };
+    final matchRows = await txn.query(
+      'duties',
+      columns: ['parent_name'],
+      where: 'match_id=? AND parent_name IS NOT NULL AND parent_name != ?',
+      whereArgs: [matchId, ''],
+    );
+    final alreadyAssignedThisMatch = matchRows
+        .map((row) => row['parent_name'] as String)
+        .toSet();
+    final fresh = eligible
+        .where((parent) => !alreadyAssignedThisMatch.contains(parent))
+        .toList();
+    final pool = fresh.isEmpty ? eligible : fresh;
+    pool.sort((a, b) {
+      final byCount = (counts[a] ?? 0).compareTo(counts[b] ?? 0);
+      return byCount != 0
+          ? byCount
+          : a.toLowerCase().compareTo(b.toLowerCase());
+    });
+    return pool.first;
   }
 
   Future<int> addDuty(int matchId, String title, String description) =>
@@ -530,9 +727,54 @@ class TeamStore {
       });
 
   Future<void> assignDuty(int id, int? playerId) async {
+    String? parentName;
+    if (playerId != null) {
+      final playerRows = await _db.query(
+        'players',
+        columns: ['name', 'parent'],
+        where: 'id=?',
+        whereArgs: [playerId],
+        limit: 1,
+      );
+      if (playerRows.isNotEmpty) {
+        final parent = (playerRows.first['parent'] as String).trim();
+        parentName = parent.isEmpty
+            ? playerRows.first['name'] as String
+            : parent;
+      }
+    }
     await _db.update(
       'duties',
-      {'player_id': playerId},
+      {'player_id': playerId, 'parent_name': parentName},
+      where: 'id=?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> assignDutyToParent(int id, String? parentName) async {
+    final normalized = parentName?.trim();
+    int? playerId;
+    if (normalized != null && normalized.isNotEmpty) {
+      final playerRows = await _db.query(
+        'players',
+        columns: ['id'],
+        where: 'parent=?',
+        whereArgs: [normalized],
+        orderBy: 'name COLLATE NOCASE, id',
+        limit: 1,
+      );
+      if (playerRows.isNotEmpty) {
+        playerId = playerRows.first['id'] as int;
+      }
+    }
+    await _db.update(
+      'duties',
+      {
+        'player_id': playerId,
+        'parent_name': normalized == null || normalized.isEmpty
+            ? null
+            : normalized,
+      },
       where: 'id=?',
       whereArgs: [id],
     );

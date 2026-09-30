@@ -1,5 +1,6 @@
 package nl.rkavic.manager
 
+import android.annotation.SuppressLint
 import android.app.*
 import android.os.Bundle
 import android.content.*
@@ -7,7 +8,6 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.graphics.Color
 import android.text.InputType
-import android.view.*
 import android.widget.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -18,7 +18,7 @@ class MainActivity : Activity() {
     private val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
     override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState); db = Store(this); showHome() }
     private fun screen(title: String) {
-        val outer = ScrollView(this); root = LinearLayout(this).apply { orientation = 1; setPadding(24,24,24,24) }
+        val outer = ScrollView(this); root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24,24,24,24) }
         outer.addView(root); setContentView(outer)
         label(title, 24f)
     }
@@ -70,6 +70,7 @@ class MainActivity : Activity() {
         }
         button("Cancel") { showMatch(m.id) }
     }
+    @SuppressLint("SetTextI18n")
     private fun editResult(m: Match) {
         screen("Result and status"); label(m.title)
         val rkavic=input("RKAVIC goals").apply { inputType=InputType.TYPE_CLASS_NUMBER; setText(m.rkavicScore?.toString() ?: "") }
@@ -123,7 +124,7 @@ data class Duty(val id:Long,val title:String,val playerId:Long?,val done:Boolean
 class Store(ctx: Context): SQLiteOpenHelper(ctx,"team.db",null,2) {
     override fun onCreate(d:SQLiteDatabase) { d.execSQL("CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,parent TEXT NOT NULL)"); d.execSQL("CREATE TABLE matches(id INTEGER PRIMARY KEY,title TEXT NOT NULL,date TEXT NOT NULL,meet TEXT NOT NULL,location TEXT NOT NULL,deadline TEXT NOT NULL,rkavic_score INTEGER,opponent_score INTEGER,done INTEGER NOT NULL DEFAULT 0)"); d.execSQL("CREATE TABLE attendance(match_id INTEGER NOT NULL,player_id INTEGER NOT NULL,status INTEGER NOT NULL,PRIMARY KEY(match_id,player_id))"); d.execSQL("CREATE TABLE duties(id INTEGER PRIMARY KEY,match_id INTEGER NOT NULL,title TEXT NOT NULL,player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)") }
     override fun onUpgrade(d:SQLiteDatabase,old:Int,new:Int) { if(old<2) { d.execSQL("ALTER TABLE matches ADD COLUMN rkavic_score INTEGER"); d.execSQL("ALTER TABLE matches ADD COLUMN opponent_score INTEGER"); d.execSQL("ALTER TABLE matches ADD COLUMN done INTEGER NOT NULL DEFAULT 0") } }
-    private fun values(vararg pairs: Pair<String,Any?>) = android.content.ContentValues().apply { pairs.forEach { (k,v) -> when(v) { null -> putNull(k); is String -> put(k,v); is Long -> put(k,v); is Int -> put(k,v) } } }
+    private fun values(vararg pairs: Pair<String,Any?>) = ContentValues().apply { pairs.forEach { (k,v) -> when(v) { null -> putNull(k); is String -> put(k,v); is Long -> put(k,v); is Int -> put(k,v) } } }
     fun addPlayer(n:String,p:String) { writableDatabase.insert("players",null,values("name" to n,"parent" to p)) }
     fun updatePlayer(id:Long,n:String,p:String) { writableDatabase.update("players",values("name" to n,"parent" to p),"id=?",arrayOf("$id")) }
     fun deletePlayer(id:Long) { writableDatabase.delete("players","id=?",arrayOf("$id")); writableDatabase.delete("attendance","player_id=?",arrayOf("$id")); writableDatabase.execSQL("UPDATE duties SET player_id=NULL WHERE player_id=?",arrayOf(id)) }

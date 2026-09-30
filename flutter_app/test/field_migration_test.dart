@@ -187,6 +187,8 @@ void main() {
         path.join(directory.path, 'team.db'),
         databaseFactoryFfi,
       );
+      await store.addPlayer('Sam', 'Alex');
+      await store.addPlayer('Jo', 'Britt');
       final templateId = await store.addDutyTemplate(
         'Field setup',
         'Place goals, flags, and cones before kickoff.',
@@ -213,6 +215,7 @@ void main() {
       final homeDuties = await store.duties(homeMatch);
       expect(homeDuties.single.templateId, templateId);
       expect(homeDuties.single.title, 'Field setup');
+      expect(homeDuties.single.parentName, 'Alex');
       expect(
         homeDuties.single.description,
         'Place goals, flags, and cones before kickoff.',
@@ -220,6 +223,48 @@ void main() {
 
       await store.addTemplateDutiesForMatch(homeMatch);
       expect(await store.duties(homeMatch), hasLength(1));
+      await store.close();
+    } finally {
+      await directory.delete(recursive: true);
+    }
+  });
+
+  test('automatic duty assignment skips relieved parents', () async {
+    sqfliteFfiInit();
+    final directory = await Directory.systemTemp.createTemp(
+      'rkavic-relieved-duties-',
+    );
+    try {
+      final store = await TeamStore.openAt(
+        path.join(directory.path, 'team.db'),
+        databaseFactoryFfi,
+      );
+      await store.addPlayer('Sam', 'Alex');
+      await store.addPlayer('Jo', 'Britt');
+      await store.setParentDutyRelieved('Alex', true);
+      await store.addDutyTemplate('Field setup', '');
+      await store.addDutyTemplate('Canteen shift', '');
+      final match = await store.addMatch(
+        title: 'Lions',
+        kickoff: '2026-10-03 10:00',
+        meet: '2026-10-03 09:30',
+        location: 'Home field',
+        fieldNumber: '1B2',
+        isHome: true,
+        deadline: '2026-10-01 18:00',
+      );
+
+      final duties = await store.duties(match);
+      expect(duties.map((duty) => duty.parentName), everyElement('Britt'));
+      final summaries = await store.parentDutySummaries();
+      expect(
+        summaries.singleWhere((parent) => parent.name == 'Alex').relieved,
+        isTrue,
+      );
+      expect(
+        summaries.singleWhere((parent) => parent.name == 'Britt').assigned,
+        2,
+      );
       await store.close();
     } finally {
       await directory.delete(recursive: true);

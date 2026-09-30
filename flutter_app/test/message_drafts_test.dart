@@ -33,6 +33,7 @@ void main() {
         'Field setup',
         'Place goals, flags, and cones before kickoff.',
         1,
+        'Alex',
         false,
       ),
     ]);

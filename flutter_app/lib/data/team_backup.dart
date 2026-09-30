@@ -9,10 +9,11 @@ class TeamBackup {
     required this.attendance,
     required this.duties,
     required this.dutyTemplates,
+    required this.parentDutyExemptions,
   });
 
   static const format = 'rkavic-team-manager';
-  static const version = 2;
+  static const version = 3;
 
   final DateTime exportedAt;
   final List<Map<String, Object?>> players;
@@ -20,6 +21,7 @@ class TeamBackup {
   final List<Map<String, Object?>> attendance;
   final List<Map<String, Object?>> duties;
   final List<Map<String, Object?>> dutyTemplates;
+  final List<Map<String, Object?>> parentDutyExemptions;
 
   factory TeamBackup.capture({
     required List<Map<String, Object?>> players,
@@ -27,6 +29,7 @@ class TeamBackup {
     required List<Map<String, Object?>> attendance,
     required List<Map<String, Object?>> duties,
     required List<Map<String, Object?>> dutyTemplates,
+    required List<Map<String, Object?>> parentDutyExemptions,
   }) => TeamBackup._(
     exportedAt: DateTime.now().toUtc(),
     players: players,
@@ -34,6 +37,7 @@ class TeamBackup {
     attendance: attendance,
     duties: duties,
     dutyTemplates: dutyTemplates,
+    parentDutyExemptions: parentDutyExemptions,
   );
 
   String toJsonString() => const JsonEncoder.withIndent('  ').convert({
@@ -45,13 +49,16 @@ class TeamBackup {
     'attendance': attendance,
     'duties': duties,
     'dutyTemplates': dutyTemplates,
+    'parentDutyExemptions': parentDutyExemptions,
   });
 
   factory TeamBackup.fromJsonString(String source) {
     final decoded = jsonDecode(source);
     if (decoded is! Map<String, dynamic> ||
         decoded['format'] != format ||
-        (decoded['version'] != 1 && decoded['version'] != version)) {
+        (decoded['version'] != 1 &&
+            decoded['version'] != 2 &&
+            decoded['version'] != version)) {
       throw const FormatException('This is not a supported RKAVIC backup.');
     }
     final decodedVersion = decoded['version'] as int;
@@ -88,12 +95,18 @@ class TeamBackup {
       'title',
       if (decodedVersion >= 2) 'description',
       'player_id',
+      if (decodedVersion >= 3) 'parent_name',
       'done',
     });
-    if (decodedVersion == 1) {
+    if (decodedVersion < 2) {
       for (final row in duties) {
         row['template_id'] = null;
         row['description'] = '';
+      }
+    }
+    if (decodedVersion < 3) {
+      for (final row in duties) {
+        row['parent_name'] = null;
       }
     }
 
@@ -113,6 +126,11 @@ class TeamBackup {
               'id',
               'title',
               'description',
+            }),
+      parentDutyExemptions: decodedVersion < 3
+          ? const []
+          : _rows(decoded['parentDutyExemptions'], 'parent duty exemptions', {
+              'parent_name',
             }),
     );
     backup._validate();
@@ -224,6 +242,10 @@ class TeamBackup {
       }
       _string(row, 'title');
       _string(row, 'description');
+      final parentName = row['parent_name'];
+      if (parentName != null && parentName is! String) {
+        throw const FormatException('Invalid duty parent in backup.');
+      }
       _flag(row, 'done');
     }
 
@@ -240,6 +262,13 @@ class TeamBackup {
       final templateId = _optionalId(row, 'template_id');
       if (templateId != null && !templateIds.contains(templateId)) {
         throw const FormatException('Invalid duty template in backup.');
+      }
+    }
+
+    for (final row in parentDutyExemptions) {
+      _string(row, 'parent_name');
+      if ((row['parent_name'] as String).trim().isEmpty) {
+        throw const FormatException('Invalid relieved parent in backup.');
       }
     }
   }

@@ -896,6 +896,72 @@ class _TeamHomeState extends State<TeamHome> {
                 .toList(),
           ),
         ),
+      const SizedBox(height: 22),
+      _section('Parent duty pool', null, ''),
+      FutureBuilder<List<ParentDutySummary>>(
+        future: widget.store.parentDutySummaries(),
+        builder: (context, snapshot) {
+          final summaries = snapshot.data ?? const <ParentDutySummary>[];
+          if (summaries.isEmpty) {
+            return _empty(
+              'No parent pool yet',
+              'Add parent names to players to include them in duty rotation.',
+              Icons.family_restroom_outlined,
+            );
+          }
+          return Card(
+            child: Column(
+              children: summaries
+                  .map(
+                    (summary) => Column(
+                      children: [
+                        ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 8,
+                          ),
+                          leading: CircleAvatar(
+                            backgroundColor: summary.relieved
+                                ? const Color(0xFFE8E1D8)
+                                : const Color(0xFFFFE7D0),
+                            child: Icon(
+                              summary.relieved
+                                  ? Icons.block_outlined
+                                  : Icons.volunteer_activism_outlined,
+                              color: forest,
+                            ),
+                          ),
+                          title: Text(
+                            summary.name,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            [
+                              if (summary.children.isNotEmpty)
+                                'Players: ${summary.children.join(', ')}',
+                              '${summary.done}/${summary.assigned} duties done',
+                            ].join('\n'),
+                          ),
+                          trailing: Checkbox(
+                            value: summary.relieved,
+                            onChanged: (value) async {
+                              await widget.store.setParentDutyRelieved(
+                                summary.name,
+                                value ?? false,
+                              );
+                              await refresh();
+                            },
+                          ),
+                        ),
+                        if (summary != summaries.last) const Divider(height: 1),
+                      ],
+                    ),
+                  )
+                  .toList(),
+            ),
+          );
+        },
+      ),
     ],
   );
 
@@ -912,6 +978,15 @@ class _TeamHomeState extends State<TeamHome> {
     await Future<void>.delayed(Duration.zero);
     if (!mounted) return;
     await WidgetsBinding.instance.endOfFrame;
+  }
+
+  Future<void> _disposeAfterDialogClose(
+    List<TextEditingController> controllers,
+  ) async {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    for (final controller in controllers) {
+      controller.dispose();
+    }
   }
 
   Widget _playerTile(Player player, ParticipationSummary? participation) {
@@ -1015,8 +1090,7 @@ class _TeamHomeState extends State<TeamHome> {
       }
       await refresh();
     }
-    name.dispose();
-    parent.dispose();
+    await _disposeAfterDialogClose([name, parent]);
   }
 
   Future<void> _deletePlayer(Player player) async {
@@ -1094,8 +1168,7 @@ class _TeamHomeState extends State<TeamHome> {
       }
       await refresh();
     }
-    title.dispose();
-    description.dispose();
+    await _disposeAfterDialogClose([title, description]);
   }
 
   Future<bool> _confirm(String title, String detail) async =>
@@ -1269,9 +1342,7 @@ class _TeamHomeState extends State<TeamHome> {
         await refresh();
       }
     }
-    title.dispose();
-    location.dispose();
-    fieldNumber.dispose();
+    await _disposeAfterDialogClose([title, location, fieldNumber]);
   }
 
   Widget _dateTile(String label, DateTime value, VoidCallback onTap) =>
@@ -1386,8 +1457,7 @@ class _TeamHomeState extends State<TeamHome> {
       );
       await refresh();
     }
-    ours.dispose();
-    theirs.dispose();
+    await _disposeAfterDialogClose([ours, theirs]);
   }
 
   Widget _mapCard(TeamMatch match) => Card(
@@ -1626,15 +1696,7 @@ class _TeamHomeState extends State<TeamHome> {
                         subtitle: Text(
                           [
                             if (duty.description.isNotEmpty) duty.description,
-                            players
-                                    .where((p) => p.id == duty.playerId)
-                                    .map(
-                                      (p) => p.parent.isEmpty
-                                          ? p.name
-                                          : '${p.parent} (${p.name})',
-                                    )
-                                    .firstOrNull ??
-                                'Unassigned',
+                            duty.parentName ?? 'Unassigned',
                           ].join('\n'),
                         ),
                         trailing: PopupMenuButton<String>(
@@ -1812,25 +1874,30 @@ class _TeamHomeState extends State<TeamHome> {
       if (!mounted) return;
       setState(() {});
     }
-    title.dispose();
-    description.dispose();
+    await _disposeAfterDialogClose([title, description]);
   }
 
   Future<void> _assignDuty(Duty duty) async {
-    final value = await showDialog<int?>(
+    final parents = (await widget.store.parentDutySummaries())
+        .where((summary) => !summary.relieved)
+        .toList();
+    if (!mounted) return;
+    final value = await showDialog<String?>(
       context: context,
       builder: (context) => SimpleDialog(
         title: Text('Assign ${duty.title}'),
         children: [
           SimpleDialogOption(
-            onPressed: () => Navigator.pop(context, -1),
+            onPressed: () => Navigator.pop(context, ''),
             child: const Text('Unassigned'),
           ),
-          ...players.map(
-            (p) => SimpleDialogOption(
-              onPressed: () => Navigator.pop(context, p.id),
+          ...parents.map(
+            (parent) => SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, parent.name),
               child: Text(
-                p.parent.isEmpty ? p.name : '${p.parent} (${p.name})',
+                parent.children.isEmpty
+                    ? parent.name
+                    : '${parent.name} (${parent.children.join(', ')})',
               ),
             ),
           ),
@@ -1838,7 +1905,7 @@ class _TeamHomeState extends State<TeamHome> {
       ),
     );
     if (value != null) {
-      await widget.store.assignDuty(duty.id, value == -1 ? null : value);
+      await widget.store.assignDutyToParent(duty.id, value);
       if (!mounted) return;
       setState(() {});
     }
