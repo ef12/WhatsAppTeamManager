@@ -58,7 +58,8 @@ void _writeErrorLog(FlutterErrorDetails details) {
     errorLogFile?.writeAsStringSync(
       [
         '--- ${DateTime.now().toIso8601String()} ---',
-        details.toString(),
+        details.exceptionAsString(),
+        if (details.stack != null) details.stack.toString(),
         '',
       ].join('\n'),
       mode: FileMode.append,
