@@ -44,10 +44,19 @@ void main() {
           version: 2,
           onCreate: (db, version) async {
             await db.execute(
+              'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
+              'parent TEXT NOT NULL)',
+            );
+            await db.execute(
               'CREATE TABLE matches(id INTEGER PRIMARY KEY,title TEXT NOT NULL,'
               'date TEXT NOT NULL,meet TEXT NOT NULL,location TEXT NOT NULL,'
               'deadline TEXT NOT NULL,rkavic_score INTEGER,opponent_score INTEGER,'
               'done INTEGER NOT NULL DEFAULT 0)',
+            );
+            await db.execute(
+              'CREATE TABLE attendance(match_id INTEGER NOT NULL,'
+              'player_id INTEGER NOT NULL,status INTEGER NOT NULL,'
+              'PRIMARY KEY(match_id,player_id))',
             );
           },
         ),
