@@ -8,11 +8,14 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'data/cloud_sync_config.dart';
 import 'data/message_drafts.dart';
 import 'data/team_backup.dart';
 import 'data/team_store.dart';
+import 'data/team_sync_service.dart';
 
 const forest = Color(0xFFF58221);
 const lime = Color(0xFFFFF3E6);
@@ -36,8 +39,18 @@ Future<void> main() async {
     );
     return false;
   };
+  TeamSyncService? syncService;
+  if (CloudSyncConfig.isConfigured) {
+    await Supabase.initialize(
+      url: CloudSyncConfig.url,
+      publishableKey: CloudSyncConfig.publishableKey,
+    );
+  }
   final store = await TeamStore.open();
-  runApp(TeamManagerApp(store: store));
+  if (CloudSyncConfig.isConfigured) {
+    syncService = TeamSyncService(store, Supabase.instance.client);
+  }
+  runApp(TeamManagerApp(store: store, syncService: syncService));
 }
 
 void _writeErrorLog(FlutterErrorDetails details) {
@@ -57,8 +70,13 @@ void _writeErrorLog(FlutterErrorDetails details) {
 }
 
 class TeamManagerApp extends StatelessWidget {
-  const TeamManagerApp({super.key, required this.store});
+  const TeamManagerApp({
+    super.key,
+    required this.store,
+    required this.syncService,
+  });
   final TeamStore store;
+  final TeamSyncService? syncService;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -79,30 +97,63 @@ class TeamManagerApp extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
     ),
-    home: TeamHome(store: store),
+    home: TeamHome(store: store, syncService: syncService),
   );
 }
 
 class TeamHome extends StatefulWidget {
-  const TeamHome({super.key, required this.store});
+  const TeamHome({super.key, required this.store, required this.syncService});
   final TeamStore store;
+  final TeamSyncService? syncService;
 
   @override
   State<TeamHome> createState() => _TeamHomeState();
 }
 
-class _TeamHomeState extends State<TeamHome> {
+class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
   int page = 0;
   int? selectedMatchId;
   List<Player> players = [];
   List<TeamMatch> matches = [];
   List<DutyTemplate> dutyTemplates = [];
   bool loading = true;
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  int _seenCloudDataGeneration = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    widget.syncService?.addListener(_onSyncServiceChanged);
+    widget.syncService?.start();
     refresh();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      widget.syncService?.onAppResumed();
+    }
+  }
+
+  void _onSyncServiceChanged() {
+    final service = widget.syncService;
+    if (service == null || service.dataGeneration == _seenCloudDataGeneration) {
+      return;
+    }
+    _seenCloudDataGeneration = service.dataGeneration;
+    refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    widget.syncService?.removeListener(_onSyncServiceChanged);
+    widget.syncService?.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
   }
 
   Future<void> refresh() async {
@@ -439,8 +490,10 @@ class _TeamHomeState extends State<TeamHome> {
       _heading(
         'Keep a copy of your team',
         'Backup & transfer',
-        'Move the full team between Android and Windows with a JSON file.',
+        'Keep a local copy, move it with a file, or sync it between your devices.',
       ),
+      _cloudSyncCard(),
+      const SizedBox(height: 16),
       Card(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -513,6 +566,193 @@ class _TeamHomeState extends State<TeamHome> {
       ),
     ],
   );
+
+  Widget _cloudSyncCard() => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.cloud_sync_outlined, color: forest, size: 34),
+          const SizedBox(height: 14),
+          const Text(
+            'Sync between your devices',
+            style: TextStyle(
+              color: forest,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (widget.syncService == null)
+            const Text(
+              'Cloud sync needs Supabase project settings. See the README '
+              'section “Set up cloud sync” for setup and build instructions.',
+            )
+          else
+            AnimatedBuilder(
+              animation: widget.syncService!,
+              builder: (context, child) =>
+                  _cloudSyncControls(widget.syncService!),
+            ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _cloudSyncControls(TeamSyncService service) {
+    final signedIn = service.isSignedIn;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(service.statusMessage),
+        if (signedIn) ...[
+          const SizedBox(height: 8),
+          Text('Account: ${service.signedInEmail ?? 'signed in'}'),
+          if (service.lastSyncedAt != null)
+            Text(
+              'Last synced: ${DateFormat('yyyy-MM-dd HH:mm').format(service.lastSyncedAt!.toLocal())}',
+            ),
+          if (service.phase == TeamSyncPhase.conflict) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'Sync replaces the full team snapshot. Export a backup first '
+              'if you may need both copies.',
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                if (service.conflict?.remoteSnapshot != null)
+                  OutlinedButton.icon(
+                    onPressed: _confirmUseCloudCopy,
+                    icon: const Icon(Icons.cloud_download_outlined),
+                    label: const Text('Use cloud copy'),
+                  ),
+                FilledButton.icon(
+                  onPressed: _confirmKeepThisDevice,
+                  icon: const Icon(Icons.phone_android_outlined),
+                  label: const Text('Keep this device'),
+                ),
+              ],
+            ),
+          ] else ...[
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: service.phase == TeamSyncPhase.syncing
+                      ? null
+                      : () => service.syncNow(forceRemoteCheck: true),
+                  icon: const Icon(Icons.sync),
+                  label: const Text('Sync now'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: service.phase == TeamSyncPhase.syncing
+                      ? null
+                      : service.signOut,
+                  icon: const Icon(Icons.logout),
+                  label: const Text('Sign out'),
+                ),
+              ],
+            ),
+          ],
+        ] else ...[
+          const SizedBox(height: 14),
+          TextField(
+            controller: _emailController,
+            keyboardType: TextInputType.emailAddress,
+            autofillHints: const [AutofillHints.username, AutofillHints.email],
+            decoration: const InputDecoration(labelText: 'Email'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _passwordController,
+            obscureText: true,
+            autofillHints: const [AutofillHints.password],
+            decoration: const InputDecoration(labelText: 'Password'),
+            onSubmitted: (_) =>
+                service.signIn(_emailController.text, _passwordController.text),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: () => service.signIn(
+                  _emailController.text,
+                  _passwordController.text,
+                ),
+                icon: const Icon(Icons.login),
+                label: const Text('Sign in'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => service.createAccount(
+                  _emailController.text,
+                  _passwordController.text,
+                ),
+                icon: const Icon(Icons.person_add_alt_1),
+                label: const Text('Create account'),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<void> _confirmUseCloudCopy() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Replace this device with the cloud copy?'),
+        content: const Text(
+          'All team data currently on this device will be replaced. Export a '
+          'JSON backup first if you want to keep a copy.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Replace local data'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.syncService?.useCloudCopy();
+  }
+
+  Future<void> _confirmKeepThisDevice() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Replace the cloud copy?'),
+        content: const Text(
+          'The data on this device will replace the complete cloud snapshot '
+          'for this account. Other devices will receive this copy on their '
+          'next sync. Export a JSON backup first if needed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Replace cloud data'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.syncService?.keepThisDevice();
+  }
 
   void _backupMessage(String message) {
     if (!mounted) return;

@@ -158,6 +158,26 @@ class ParentDutySummary {
   final bool relieved;
 }
 
+class LocalSyncState {
+  const LocalSyncState({
+    required this.localRevision,
+    required this.lastSyncedRevision,
+    required this.remoteRevision,
+    required this.syncUserId,
+    required this.lastSyncedAt,
+  });
+
+  final int localRevision;
+  final int? lastSyncedRevision;
+  final int remoteRevision;
+  final String? syncUserId;
+  final DateTime? lastSyncedAt;
+}
+
+class LocalSyncConflictException implements Exception {
+  const LocalSyncConflictException();
+}
+
 class TeamStore {
   TeamStore._(this._db);
 
@@ -187,7 +207,7 @@ class TeamStore {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 5,
+        version: 6,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -218,6 +238,7 @@ class TeamStore {
           await db.execute(
             'CREATE TABLE parent_duty_exemptions(parent_name TEXT PRIMARY KEY)',
           );
+          await _createSyncTracking(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -294,6 +315,9 @@ class TeamStore {
               );
             }
           }
+          if (oldVersion < 6) {
+            await _createSyncTracking(db);
+          }
         },
       ),
     );
@@ -301,6 +325,120 @@ class TeamStore {
   }
 
   Future<void> close() => _db.close();
+
+  Future<LocalSyncState> localSyncState() async {
+    final rows = await _db.query('app_sync_state', where: 'id=1', limit: 1);
+    final row = rows.single;
+    return LocalSyncState(
+      localRevision: row['local_revision'] as int,
+      lastSyncedRevision: row['last_synced_revision'] as int?,
+      remoteRevision: row['remote_revision'] as int,
+      syncUserId: row['sync_user_id'] as String?,
+      lastSyncedAt: DateTime.tryParse(row['last_synced_at'] as String? ?? ''),
+    );
+  }
+
+  Future<void> prepareSyncForUser(String userId) =>
+      _db.transaction((txn) async {
+        final rows = await txn.query(
+          'app_sync_state',
+          columns: ['sync_user_id'],
+          where: 'id=1',
+          limit: 1,
+        );
+        if (rows.single['sync_user_id'] == userId) return;
+        await txn.update('app_sync_state', {
+          'sync_user_id': userId,
+          'last_synced_revision': null,
+          'remote_revision': 0,
+          'last_synced_at': null,
+        }, where: 'id=1');
+      });
+
+  Future<bool> hasTeamData() async {
+    for (final table in [
+      'players',
+      'matches',
+      'attendance',
+      'duties',
+      'duty_templates',
+      'parent_duty_exemptions',
+    ]) {
+      final rows = await _db.rawQuery('SELECT 1 FROM $table LIMIT 1');
+      if (rows.isNotEmpty) return true;
+    }
+    return false;
+  }
+
+  Future<void> markSyncState({
+    required int lastSyncedRevision,
+    required int remoteRevision,
+  }) => _db.transaction((txn) async {
+    // Preserve the exported revision as the sync baseline. If the user edited
+    // while the upload was in flight, the newer local revision stays dirty.
+    await txn.update('app_sync_state', {
+      'last_synced_revision': lastSyncedRevision,
+      'remote_revision': remoteRevision,
+      'last_synced_at': DateTime.now().toUtc().toIso8601String(),
+    }, where: 'id=1');
+  });
+
+  Future<void> restoreCloudSnapshot({
+    required TeamBackup backup,
+    required int expectedLocalRevision,
+    required int remoteRevision,
+  }) => _db.transaction((txn) async {
+    final state = await txn.query(
+      'app_sync_state',
+      columns: ['local_revision'],
+      where: 'id=1',
+      limit: 1,
+    );
+    if (state.single['local_revision'] != expectedLocalRevision) {
+      throw const LocalSyncConflictException();
+    }
+    await _replaceWithBackup(txn, backup);
+    final updated = await txn.query(
+      'app_sync_state',
+      columns: ['local_revision'],
+      where: 'id=1',
+      limit: 1,
+    );
+    await txn.update('app_sync_state', {
+      'last_synced_revision': updated.single['local_revision'],
+      'remote_revision': remoteRevision,
+      'last_synced_at': DateTime.now().toUtc().toIso8601String(),
+    }, where: 'id=1');
+  });
+
+  static Future<void> _createSyncTracking(DatabaseExecutor db) async {
+    await db.execute(
+      'CREATE TABLE app_sync_state('
+      'id INTEGER PRIMARY KEY CHECK(id=1),'
+      'local_revision INTEGER NOT NULL DEFAULT 0,'
+      'last_synced_revision INTEGER,'
+      'remote_revision INTEGER NOT NULL DEFAULT 0,'
+      'sync_user_id TEXT,last_synced_at TEXT)',
+    );
+    await db.insert('app_sync_state', {'id': 1});
+    for (final table in [
+      'players',
+      'matches',
+      'attendance',
+      'duties',
+      'duty_templates',
+      'parent_duty_exemptions',
+    ]) {
+      for (final event in ['INSERT', 'UPDATE', 'DELETE']) {
+        final name = 'sync_${table}_${event.toLowerCase()}';
+        await db.execute(
+          'CREATE TRIGGER $name AFTER $event ON $table BEGIN '
+          'UPDATE app_sync_state SET local_revision=local_revision+1 WHERE id=1; '
+          'END',
+        );
+      }
+    }
+  }
 
   Future<TeamBackup> exportBackup() => _db.transaction(
     (txn) async => TeamBackup.capture(
@@ -317,36 +455,41 @@ class TeamStore {
   );
 
   Future<void> replaceWithBackup(TeamBackup backup) =>
-      _db.transaction((txn) async {
-        for (final table in [
-          'attendance',
-          'duties',
-          'duty_templates',
-          'parent_duty_exemptions',
-          'matches',
-          'players',
-        ]) {
-          await txn.delete(table);
-        }
-        for (final row in backup.players) {
-          await txn.insert('players', row);
-        }
-        for (final row in backup.matches) {
-          await txn.insert('matches', row);
-        }
-        for (final row in backup.attendance) {
-          await txn.insert('attendance', row);
-        }
-        for (final row in backup.duties) {
-          await txn.insert('duties', row);
-        }
-        for (final row in backup.dutyTemplates) {
-          await txn.insert('duty_templates', row);
-        }
-        for (final row in backup.parentDutyExemptions) {
-          await txn.insert('parent_duty_exemptions', row);
-        }
-      });
+      _db.transaction((txn) => _replaceWithBackup(txn, backup));
+
+  Future<void> _replaceWithBackup(
+    DatabaseExecutor txn,
+    TeamBackup backup,
+  ) async {
+    for (final table in [
+      'attendance',
+      'duties',
+      'duty_templates',
+      'parent_duty_exemptions',
+      'matches',
+      'players',
+    ]) {
+      await txn.delete(table);
+    }
+    for (final row in backup.players) {
+      await txn.insert('players', row);
+    }
+    for (final row in backup.matches) {
+      await txn.insert('matches', row);
+    }
+    for (final row in backup.attendance) {
+      await txn.insert('attendance', row);
+    }
+    for (final row in backup.duties) {
+      await txn.insert('duties', row);
+    }
+    for (final row in backup.dutyTemplates) {
+      await txn.insert('duty_templates', row);
+    }
+    for (final row in backup.parentDutyExemptions) {
+      await txn.insert('parent_duty_exemptions', row);
+    }
+  }
 
   Future<List<Player>> players() async => (await _db.query(
     'players',
