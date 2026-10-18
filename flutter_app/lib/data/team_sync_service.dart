@@ -72,8 +72,9 @@ class TeamSyncService extends ChangeNotifier {
             _lastRemoteCheck == null ||
             DateTime.now().difference(_lastRemoteCheck!) >=
                 const Duration(minutes: 1);
-        if (hasPendingChanges || checkRemote)
+        if (hasPendingChanges || checkRemote) {
           syncNow(forceRemoteCheck: checkRemote);
+        }
       } catch (_) {
         // A failed local status read is retried on the next timer tick.
       }
