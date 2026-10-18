@@ -14,6 +14,18 @@ A local team manager for Android and Windows, built with Flutter. Plan matches, 
 
 Each device keeps its own SQLite database. There is no account, cloud sync, automatic WhatsApp sending, or automatic reading of replies.
 
+## Intended personal use and privacy
+
+This app is used by an individual football team manager on the manager's own behalf, not on behalf of RKAVIC or another club. The manager independently decides whether to use the app and what information to enter. The manager keeps the team data for personal use and does not give the club or other people access to the app or its local database. The app stores player and parent names, match information, attendance, results, and duties on the device. It does not send this database to the app publisher or to a cloud service.
+
+The app can generate message drafts from this information. It never sends a message or reads WhatsApp replies. The manager chooses whether to copy and send a draft to the team's private WhatsApp group. A sent draft can contain information derived from the app, such as match details, attendance reminders, results, or duty assignments; review it before sharing. WhatsApp processes messages sent through its service under its own terms and privacy information.
+
+JSON backups are created only when the manager chooses to export them. Backup files are not encrypted by this app and can contain personal information. Store them somewhere with access limited to you, and delete copies when they are no longer needed. There is currently no automatic cloud backup or cross-device sync.
+
+This section describes the manager's intended use; it does not by itself establish that a particular use is exempt from the GDPR or make the app GDPR-compliant. The GDPR excludes processing by a natural person only when it is carried out in the course of a purely personal or household activity. The manager acts independently and not under the club's direction, but whether managing a football team falls within that exemption still depends on the real context. Using a personal device or a private WhatsApp group does not by itself settle the question. See [GDPR Article 2 and Recital 18](https://eur-lex.europa.eu/eli/reg/2016/679/oj) and the [Dutch Data Protection Authority's explanation of legal grounds and personal or household use](https://autoriteitpersoonsgegevens.nl/themas/basis-avg/avg-algemeen/grondslagen-avg-uitgelegd).
+
+The manager does not use the app under the club's instructions, and the club does not receive access to the local app data. This describes the manager's intended arrangement; the actual facts determine the legal position. If that arrangement changes, review who determines the purposes and means of processing and who is responsible for GDPR obligations. See the Dutch Data Protection Authority's guidance on [controllers and processors](https://autoriteitpersoonsgegevens.nl/themas/basis-avg/avg-algemeen/verantwoordelijke-en-verwerker). Avoid recording health details or other sensitive information in the app.
+
 ## Source layout
 
 `flutter_app/` is the Android and Windows app. The original Kotlin Android project remains in `app/` for reference. New distributions are built from Flutter.
