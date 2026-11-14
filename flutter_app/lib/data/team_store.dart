@@ -258,9 +258,14 @@ class TeamStore {
             );
           }
           if (oldVersion < 4) {
-            await db.execute(
-              'ALTER TABLE matches ADD COLUMN is_home INTEGER NOT NULL DEFAULT 0',
+            final matchColumns = await db.rawQuery(
+              'PRAGMA table_info(matches)',
             );
+            if (!matchColumns.any((column) => column['name'] == 'is_home')) {
+              await db.execute(
+                'ALTER TABLE matches ADD COLUMN is_home INTEGER NOT NULL DEFAULT 0',
+              );
+            }
             final dutyTables = await db.query(
               'sqlite_master',
               columns: ['name'],
@@ -275,12 +280,23 @@ class TeamStore {
                 'player_id INTEGER,done INTEGER NOT NULL DEFAULT 0)',
               );
             } else {
-              await db.execute(
-                'ALTER TABLE duties ADD COLUMN template_id INTEGER',
+              final dutyColumns = await db.rawQuery(
+                'PRAGMA table_info(duties)',
               );
-              await db.execute(
-                "ALTER TABLE duties ADD COLUMN description TEXT NOT NULL DEFAULT ''",
-              );
+              if (!dutyColumns.any(
+                (column) => column['name'] == 'template_id',
+              )) {
+                await db.execute(
+                  'ALTER TABLE duties ADD COLUMN template_id INTEGER',
+                );
+              }
+              if (!dutyColumns.any(
+                (column) => column['name'] == 'description',
+              )) {
+                await db.execute(
+                  "ALTER TABLE duties ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+                );
+              }
             }
             await db.execute(
               'CREATE TABLE IF NOT EXISTS duty_templates(id INTEGER PRIMARY KEY,'
