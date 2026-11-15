@@ -47,6 +47,8 @@ In Settings, each manager creates an account. One person creates the team and sh
 
 `flutter_app/` is the Android and Windows app. The original Kotlin Android project remains in `app/` for reference. New distributions are built from Flutter.
 
+The experimental read-only WhatsApp group reader is in `companion/`. See its README for setup. It runs separately on Windows and is not connected to the Flutter app or team sync yet.
+
 The Flutter Android app keeps the original application ID `nl.rkavic.manager` and database name `team.db`. Version `0.6.1+7` upgrades an installed `0.2` through `0.6` build when signed with the **same key**, retaining its local data. New records receive random IDs so different devices can create records independently. Windows stores a separate database in the user's application support folder.
 
 ## Build locally

@@ -1,0 +1,12 @@
+{
+  "name": "rkavic-whatsapp-reader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opt-in, read-only WhatsApp group capture companion.",
+  "engines": { "node": ">=22.13.0" },
+  "scripts": { "start": "node src/reader.js" },
+  "dependencies": {
+    "qrcode-terminal": "0.12.0",
+    "whatsapp-web.js": "1.34.8"
+  }
+}
