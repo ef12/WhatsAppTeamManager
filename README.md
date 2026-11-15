@@ -8,7 +8,7 @@ A local team manager for Android and Windows, built with Flutter. Plan matches, 
 - Set kickoff, meetup, address or venue, field number (for example `1B2`), and reply deadline with date and time pickers. Tap the address on a match to open it in Google Maps.
 - Record attendance, track each member's participation across events, and assign duties to a player or parent.
 - Enter a result, mark a match done, and reopen it later.
-- Preview and manually share invitation, poll, reminder, duty, result, and substitute drafts. Invitation and substitute drafts include a Google Maps link when the match has an address or venue. On Android, the share sheet opens. On Windows, the draft is copied and WhatsApp Web opens when you choose that action.
+- Edit, copy, and manually share invitation, poll, reminder, duty, result, and substitute drafts. Reset restores the generated text. Invitation and substitute drafts include a Google Maps link when the match has an address or venue. On Android, the share sheet opens. On Windows, the edited message is copied and WhatsApp Web opens when you choose that action.
 - Export and import a JSON backup to move the complete local team data between Android and Windows.
 - Optionally share a team with separate Supabase accounts. Changes sync automatically while the app is open and on resume. Independent edits merge; overlapping edits require a choice.
 - Use the same RKAVIC orange design on Android and Windows, with navigation adapted to each screen size.
@@ -19,7 +19,7 @@ Each device keeps its own SQLite database. Cloud sync is optional and disabled u
 
 This app can be used by a small group of team managers acting on their own behalf, not on behalf of RKAVIC or another club. They decide what information to enter and whom to invite. The app stores player and parent names, match information, attendance, results, and duties on each device. If cloud sync is configured, it uploads a snapshot accessible to authenticated members of the shared team. It does not send this database to the app publisher.
 
-The app can generate message drafts from this information. It never sends a message or reads WhatsApp replies. The manager chooses whether to copy and send a draft to the team's private WhatsApp group. A sent draft can contain information derived from the app, such as match details, attendance reminders, results, or duty assignments; review it before sharing. WhatsApp processes messages sent through its service under its own terms and privacy information.
+The app can generate message drafts from this information. You can edit each draft before copying or sharing it. It never sends a message or reads WhatsApp replies. The manager chooses whether to copy and send a draft to the team's private WhatsApp group. A sent draft can contain information derived from the app, such as match details, attendance reminders, results, or duty assignments; review it before sharing. WhatsApp processes messages sent through its service under its own terms and privacy information.
 
 JSON file backups are created only when a manager chooses to export them. File backups are not encrypted by this app and can contain personal information. Store them somewhere with limited access. If cloud sync is enabled, the app uploads a full JSON snapshot to Supabase. Authenticated team members can access it under row-level access policies. The app does not encrypt the JSON before upload. The owner can remove members and reset the invitation code; a removed member may still retain data already downloaded to their device.
 

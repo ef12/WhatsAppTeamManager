@@ -2270,7 +2270,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
           const SizedBox(height: 28),
           _section('WhatsApp drafts', null, ''),
           const Text(
-            'Review a draft, then share it yourself.',
+            'Edit a draft, then copy or share it yourself.',
             style: TextStyle(color: Color(0xFF6F5B4A)),
           ),
           const SizedBox(height: 12),
@@ -2458,51 +2458,85 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
       );
 
   Future<void> _showDraft(String label, String draft) async {
+    final controller = TextEditingController(text: draft);
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('$label draft'),
-        content: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: 520,
-            maxHeight: MediaQuery.sizeOf(context).height * 0.6,
-          ),
-          child: SingleChildScrollView(child: SelectableText(draft)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-          TextButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: draft));
-              if (context.mounted) Navigator.pop(context);
-            },
-            icon: const Icon(Icons.copy),
-            label: const Text('Copy'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              if (Platform.isWindows) {
-                await Clipboard.setData(ClipboardData(text: draft));
-                await launchUrl(
-                  Uri.parse('https://web.whatsapp.com/'),
-                  mode: LaunchMode.externalApplication,
-                );
-              } else {
-                await SharePlus.instance.share(ShareParams(text: draft));
-              }
-              if (context.mounted) Navigator.pop(context);
-            },
-            icon: const Icon(Icons.share_outlined),
-            label: Text(
-              Platform.isWindows ? 'Copy & open WhatsApp Web' : 'Share',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Edit $label message'),
+          scrollable: true,
+          content: SizedBox(
+            width: 520,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: TextInputType.multiline,
+              minLines: 6,
+              maxLines: 12,
+              onChanged: (_) => setDialogState(() {}),
+              decoration: const InputDecoration(
+                labelText: 'WhatsApp message',
+                alignLabelWithHint: true,
+              ),
             ),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+            TextButton.icon(
+              onPressed: controller.text == draft
+                  ? null
+                  : () => setDialogState(() {
+                      controller.text = draft;
+                      controller.selection = TextSelection.collapsed(
+                        offset: draft.length,
+                      );
+                    }),
+              icon: const Icon(Icons.restart_alt),
+              label: const Text('Reset'),
+            ),
+            TextButton.icon(
+              onPressed: controller.text.trim().isEmpty
+                  ? null
+                  : () async {
+                      await Clipboard.setData(
+                        ClipboardData(text: controller.text),
+                      );
+                      if (context.mounted) Navigator.pop(context);
+                    },
+              icon: const Icon(Icons.copy),
+              label: const Text('Copy'),
+            ),
+            FilledButton.icon(
+              onPressed: controller.text.trim().isEmpty
+                  ? null
+                  : () async {
+                      final message = controller.text;
+                      if (Platform.isWindows) {
+                        await Clipboard.setData(ClipboardData(text: message));
+                        await launchUrl(
+                          Uri.parse('https://web.whatsapp.com/'),
+                          mode: LaunchMode.externalApplication,
+                        );
+                      } else {
+                        await SharePlus.instance.share(
+                          ShareParams(text: message),
+                        );
+                      }
+                      if (context.mounted) Navigator.pop(context);
+                    },
+              icon: const Icon(Icons.share_outlined),
+              label: Text(
+                Platform.isWindows ? 'Copy & open WhatsApp Web' : 'Share',
+              ),
+            ),
+          ],
+        ),
       ),
     );
+    controller.dispose();
   }
 }
 
