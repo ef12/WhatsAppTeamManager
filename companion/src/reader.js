@@ -274,6 +274,30 @@ async function printPollVotes(votes, groupId) {
   }
 }
 
+async function sendLoop(selection) {
+  console.log(`Text sending is available only to "${selection.name}". Each message requires typing SEND to confirm.`);
+  while (!stopped) {
+    const text = (await rl.question('Message to send (or /exit to stop the reader): ')).trim();
+    if (text.toLowerCase() === '/exit') {
+      await shutdown();
+      return;
+    }
+    if (!text) continue;
+    console.log(`\nTo: ${selection.name}\nMessage:\n${text}\n`);
+    const confirm = (await rl.question(`Send this message to "${selection.name}"? Type SEND to confirm: `)).trim();
+    if (confirm !== 'SEND') {
+      console.log('Not sent.');
+      continue;
+    }
+    try {
+      await client.sendMessage(selection.id, text);
+      console.log('Message sent.');
+    } catch (error) {
+      console.error(`Could not send message: ${error.message || error}`);
+    }
+  }
+}
+
 async function shutdown() {
   if (stopped) return;
   stopped = true;
@@ -283,7 +307,7 @@ async function shutdown() {
 }
 
 async function main() {
-  console.log('RKAVIC WhatsApp group reader — read-only prototype');
+  console.log('RKAVIC WhatsApp group reader — reader and sender prototype');
   console.log(`Stores selected-group text, polls, and reactions locally for ${retentionDays} days. No media is saved.`);
   console.log('This unofficial client can break or lead to WhatsApp account restrictions.');
   const consent = (await rl.question(
@@ -435,6 +459,7 @@ async function main() {
           console.log(`Reaction removed: ${who} from ${target}`);
         }
       });
+      await sendLoop(selection);
     } catch (error) {
       console.error(`Could not load groups: ${error.message}`);
     }
