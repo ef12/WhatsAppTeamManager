@@ -7,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -16,6 +15,8 @@ import 'data/message_drafts.dart';
 import 'data/team_backup.dart';
 import 'data/team_store.dart';
 import 'data/team_sync_service.dart';
+import 'data/whatsapp_message_writer.dart';
+import 'widgets/android_whatsapp_spike.dart';
 
 const forest = Color(0xFFF58221);
 const lime = Color(0xFFFFF3E6);
@@ -622,6 +623,10 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
         'Manage your profile, team access, and automatic sync.',
       ),
       _cloudSyncCard(),
+      if (Platform.isAndroid || Platform.isWindows) ...[
+        const SizedBox(height: 16),
+        const WhatsAppReaderCard(),
+      ],
       const SizedBox(height: 16),
       Card(
         child: Padding(
@@ -2431,6 +2436,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
                             DropdownMenuItem(value: 0, child: Text('Awaiting')),
                             DropdownMenuItem(value: 1, child: Text('Coming')),
                             DropdownMenuItem(value: 2, child: Text('Absent')),
+                            DropdownMenuItem(value: 3, child: Text('Maybe')),
                           ],
                           onChanged: (value) async {
                             await widget.store.setAttendance(
@@ -2795,23 +2801,24 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
                   ? null
                   : () async {
                       final message = controller.text;
-                      if (Platform.isWindows) {
-                        await Clipboard.setData(ClipboardData(text: message));
-                        await launchUrl(
-                          Uri.parse('https://web.whatsapp.com/'),
-                          mode: LaunchMode.externalApplication,
-                        );
-                      } else {
-                        await SharePlus.instance.share(
-                          ShareParams(text: message),
+                      try {
+                        final result = await createWhatsAppMessageWriter()
+                            .handoffDraft(message);
+                        if (!context.mounted) return;
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context)
+                            .showSnackBar(SnackBar(content: Text(result)));
+                      } catch (error) {
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Could not open WhatsApp: $error'),
+                          ),
                         );
                       }
-                      if (context.mounted) Navigator.pop(context);
                     },
               icon: const Icon(Icons.share_outlined),
-              label: Text(
-                Platform.isWindows ? 'Copy & open WhatsApp Web' : 'Share',
-              ),
+              label: const Text('Continue in WhatsApp'),
             ),
           ],
         ),

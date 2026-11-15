@@ -12,6 +12,8 @@ captures/
 .android-user-home/
 .kotlin/
 **/build/
+companion/android-spike/*.aar
+companion/android-spike/*-sources.jar
 
 # Local signing keys and packages
 *.keystore
