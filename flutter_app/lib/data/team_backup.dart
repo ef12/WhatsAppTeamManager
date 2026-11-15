@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-/// A portable snapshot of the four tables that make up one local team.
+/// A portable snapshot of the tables that make up one local team.
 class TeamBackup {
   const TeamBackup._({
     required this.exportedAt,

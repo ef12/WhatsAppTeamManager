@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -165,6 +166,7 @@ class LocalSyncState {
     required this.remoteRevision,
     required this.syncUserId,
     required this.lastSyncedAt,
+    required this.baselinePayload,
   });
 
   final int localRevision;
@@ -172,6 +174,7 @@ class LocalSyncState {
   final int remoteRevision;
   final String? syncUserId;
   final DateTime? lastSyncedAt;
+  final String? baselinePayload;
 }
 
 class LocalSyncConflictException implements Exception {
@@ -182,6 +185,9 @@ class TeamStore {
   TeamStore._(this._db);
 
   final Database _db;
+  static final Random _idRandom = Random.secure();
+  static int _newId() =>
+      ((_idRandom.nextInt(1 << 26) << 26) | _idRandom.nextInt(1 << 26)) + 1;
 
   static Future<TeamStore> open() async {
     late final DatabaseFactory factory;
@@ -207,7 +213,7 @@ class TeamStore {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 6,
+        version: 7,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -334,6 +340,11 @@ class TeamStore {
           if (oldVersion < 6) {
             await _createSyncTracking(db);
           }
+          if (oldVersion == 6) {
+            await db.execute(
+              'ALTER TABLE app_sync_state ADD COLUMN baseline_payload TEXT',
+            );
+          }
         },
       ),
     );
@@ -351,6 +362,7 @@ class TeamStore {
       remoteRevision: row['remote_revision'] as int,
       syncUserId: row['sync_user_id'] as String?,
       lastSyncedAt: DateTime.tryParse(row['last_synced_at'] as String? ?? ''),
+      baselinePayload: row['baseline_payload'] as String?,
     );
   }
 
@@ -368,6 +380,7 @@ class TeamStore {
           'last_synced_revision': null,
           'remote_revision': 0,
           'last_synced_at': null,
+          'baseline_payload': null,
         }, where: 'id=1');
       });
 
@@ -389,6 +402,7 @@ class TeamStore {
   Future<void> markSyncState({
     required int lastSyncedRevision,
     required int remoteRevision,
+    required String baselinePayload,
   }) => _db.transaction((txn) async {
     // Preserve the exported revision as the sync baseline. If the user edited
     // while the upload was in flight, the newer local revision stays dirty.
@@ -396,6 +410,7 @@ class TeamStore {
       'last_synced_revision': lastSyncedRevision,
       'remote_revision': remoteRevision,
       'last_synced_at': DateTime.now().toUtc().toIso8601String(),
+      'baseline_payload': baselinePayload,
     }, where: 'id=1');
   });
 
@@ -403,6 +418,7 @@ class TeamStore {
     required TeamBackup backup,
     required int expectedLocalRevision,
     required int remoteRevision,
+    required String baselinePayload,
   }) => _db.transaction((txn) async {
     final state = await txn.query(
       'app_sync_state',
@@ -424,8 +440,34 @@ class TeamStore {
       'last_synced_revision': updated.single['local_revision'],
       'remote_revision': remoteRevision,
       'last_synced_at': DateTime.now().toUtc().toIso8601String(),
+      'baseline_payload': baselinePayload,
     }, where: 'id=1');
   });
+
+  Future<LocalSyncState> stageMergedSnapshot({
+    required TeamBackup backup,
+    required int expectedLocalRevision,
+    required int remoteRevision,
+    required String remotePayload,
+  }) async {
+    await _db.transaction((txn) async {
+      final rows = await txn.query(
+        'app_sync_state',
+        columns: ['local_revision'],
+        where: 'id=1',
+      );
+      if (rows.single['local_revision'] != expectedLocalRevision) {
+        throw const LocalSyncConflictException();
+      }
+      await _replaceWithBackup(txn, backup);
+      await txn.update('app_sync_state', {
+        'last_synced_revision': expectedLocalRevision,
+        'remote_revision': remoteRevision,
+        'baseline_payload': remotePayload,
+      }, where: 'id=1');
+    });
+    return localSyncState();
+  }
 
   static Future<void> _createSyncTracking(DatabaseExecutor db) async {
     await db.execute(
@@ -434,7 +476,7 @@ class TeamStore {
       'local_revision INTEGER NOT NULL DEFAULT 0,'
       'last_synced_revision INTEGER,'
       'remote_revision INTEGER NOT NULL DEFAULT 0,'
-      'sync_user_id TEXT,last_synced_at TEXT)',
+      'sync_user_id TEXT,last_synced_at TEXT,baseline_payload TEXT)',
     );
     await db.insert('app_sync_state', {'id': 1});
     for (final table in [
@@ -513,7 +555,7 @@ class TeamStore {
   )).map(Player.fromRow).toList();
 
   Future<int> addPlayer(String name, String parent) =>
-      _db.insert('players', {'name': name, 'parent': parent});
+      _db.insert('players', {'id': _newId(), 'name': name, 'parent': parent});
 
   Future<void> updatePlayer(int id, String name, String parent) async {
     await _db.update(
@@ -578,6 +620,7 @@ class TeamStore {
     required String deadline,
   }) => _db.transaction((txn) async {
     final matchId = await txn.insert('matches', {
+      'id': _newId(),
       'title': title,
       'date': kickoff,
       'meet': meet,
@@ -770,7 +813,7 @@ class TeamStore {
 
   Future<int> addDutyTemplate(String title, String description) => _db.insert(
     'duty_templates',
-    {'title': title, 'description': description},
+    {'id': _newId(), 'title': title, 'description': description},
   );
 
   Future<void> updateDutyTemplate(
@@ -812,6 +855,7 @@ class TeamStore {
       );
       if (existing.isNotEmpty) continue;
       await txn.insert('duties', {
+        'id': _newId(),
         'match_id': matchId,
         'template_id': templateId,
         'title': template['title'] as String,
@@ -879,6 +923,7 @@ class TeamStore {
 
   Future<int> addDuty(int matchId, String title, String description) =>
       _db.insert('duties', {
+        'id': _newId(),
         'match_id': matchId,
         'title': title,
         'description': description,

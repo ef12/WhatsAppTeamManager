@@ -120,6 +120,9 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
   bool loading = true;
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _displayNameController = TextEditingController();
+  final _teamNameController = TextEditingController();
+  final _inviteCodeController = TextEditingController();
   int _seenCloudDataGeneration = 0;
 
   @override
@@ -154,6 +157,9 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     widget.syncService?.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _displayNameController.dispose();
+    _teamNameController.dispose();
+    _inviteCodeController.dispose();
     super.dispose();
   }
 
@@ -198,7 +204,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
         ? _players()
         : page == 3
         ? _duties()
-        : _backupPage();
+        : _settingsPage();
     return Scaffold(
       body: Row(
         children: [
@@ -275,9 +281,9 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
                     label: 'Duties',
                   ),
                   NavigationDestination(
-                    icon: Icon(Icons.save_alt_outlined),
-                    selectedIcon: Icon(Icons.save_alt),
-                    label: 'Backup',
+                    icon: Icon(Icons.manage_accounts_outlined),
+                    selectedIcon: Icon(Icons.manage_accounts),
+                    label: 'Settings',
                   ),
                 ],
               ),
@@ -298,12 +304,12 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
         _navItem(1, Icons.sports_soccer_outlined, 'Matches'),
         _navItem(2, Icons.groups_outlined, 'Players'),
         _navItem(3, Icons.assignment_outlined, 'Duties'),
-        _navItem(4, Icons.save_alt_outlined, 'Backup'),
+        _navItem(4, Icons.manage_accounts_outlined, 'Settings'),
         const Spacer(),
         const Padding(
           padding: EdgeInsets.all(14),
           child: Text(
-            'LOCAL & PRIVATE\nMessages are shared by you.',
+            'TEAM ACCESS\nMessages are shared by you.',
             style: TextStyle(
               color: Color(0xFFFFE2C8),
               fontSize: 11,
@@ -323,7 +329,8 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
       children: [
         Expanded(child: _Brand()),
         Tooltip(
-          message: 'Your team data stays on this device',
+          message:
+              'Team data is stored on this device and can sync with your team',
           child: Icon(Icons.lock_outline, color: lime),
         ),
       ],
@@ -485,13 +492,13 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     );
   }
 
-  Widget _backupPage() => Column(
+  Widget _settingsPage() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       _heading(
-        'Keep a copy of your team',
-        'Backup & transfer',
-        'Keep a local copy, move it with a file, or sync it between your devices.',
+        'Your account and team',
+        'Settings',
+        'Manage your profile, team access, and automatic sync.',
       ),
       _cloudSyncCard(),
       const SizedBox(height: 16),
@@ -577,7 +584,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
           const Icon(Icons.cloud_sync_outlined, color: forest, size: 34),
           const SizedBox(height: 14),
           const Text(
-            'Sync between your devices',
+            'Account & team sync',
             style: TextStyle(
               color: forest,
               fontSize: 20,
@@ -610,34 +617,163 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
         if (signedIn) ...[
           const SizedBox(height: 8),
           Text('Account: ${service.signedInEmail ?? 'signed in'}'),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              TextButton(
+                onPressed: () => _changeAccountValue(
+                  title: 'Change email',
+                  label: 'New email',
+                  onSave: service.updateEmail,
+                ),
+                child: const Text('Change email'),
+              ),
+              TextButton(
+                onPressed: () => _changeAccountValue(
+                  title: 'Change password',
+                  label: 'New password',
+                  obscure: true,
+                  onSave: service.updatePassword,
+                ),
+                child: const Text('Change password'),
+              ),
+              TextButton.icon(
+                onPressed: service.signOut,
+                icon: const Icon(Icons.logout),
+                label: const Text('Sign out'),
+              ),
+            ],
+          ),
+          if (service.teamId == null) ...[
+            const SizedBox(height: 18),
+            TextField(
+              controller: _displayNameController,
+              decoration: const InputDecoration(labelText: 'Your name'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _teamNameController,
+              decoration: const InputDecoration(labelText: 'New team name'),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: () => service.createTeam(
+                _teamNameController.text,
+                _displayNameController.text,
+              ),
+              icon: const Icon(Icons.group_add_outlined),
+              label: const Text('Create team'),
+            ),
+            const SizedBox(height: 22),
+            TextField(
+              controller: _inviteCodeController,
+              decoration: const InputDecoration(labelText: 'Invitation code'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () => service.joinTeam(
+                _inviteCodeController.text,
+                _displayNameController.text,
+              ),
+              icon: const Icon(Icons.login_outlined),
+              label: const Text('Join team'),
+            ),
+            TextButton.icon(
+              onPressed: service.refreshTeam,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reload team'),
+            ),
+          ] else ...[
+            const SizedBox(height: 12),
+            Text(
+              'Team: ${service.teamName ?? ''}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            Text('Your name: ${service.displayName ?? ''}'),
+            Text(
+              'Members: ${service.members.map((member) => member.name).join(', ')}',
+            ),
+            if (service.isTeamOwner)
+              for (final member in service.members)
+                if (member.userId != service.currentUserId)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(member.name),
+                    trailing: TextButton(
+                      onPressed: () => _confirmRemoveMember(service, member),
+                      child: const Text('Remove'),
+                    ),
+                  ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _editTeamDetails(service),
+                  icon: const Icon(Icons.edit_outlined),
+                  label: const Text('Edit details'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(
+                      ClipboardData(text: service.inviteCode ?? ''),
+                    );
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Invitation code copied.')),
+                    );
+                  },
+                  icon: const Icon(Icons.copy_outlined),
+                  label: const Text('Copy invite code'),
+                ),
+                if (service.isTeamOwner)
+                  TextButton.icon(
+                    onPressed: service.rotateInvite,
+                    icon: const Icon(Icons.refresh_outlined),
+                    label: const Text('Reset invite code'),
+                  ),
+              ],
+            ),
+          ],
           if (service.lastSyncedAt != null)
             Text(
               'Last synced: ${DateFormat('yyyy-MM-dd HH:mm').format(service.lastSyncedAt!.toLocal())}',
             ),
           if (service.phase == TeamSyncPhase.conflict) ...[
             const SizedBox(height: 14),
-            const Text(
-              'Sync replaces the full team snapshot. Export a backup first '
-              'if you may need both copies.',
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              children: [
-                if (service.conflict?.remoteSnapshot != null)
-                  OutlinedButton.icon(
-                    onPressed: _confirmUseCloudCopy,
-                    icon: const Icon(Icons.cloud_download_outlined),
-                    label: const Text('Use cloud copy'),
-                  ),
-                FilledButton.icon(
-                  onPressed: _confirmKeepThisDevice,
-                  icon: const Icon(Icons.phone_android_outlined),
-                  label: const Text('Keep this device'),
+            if (service.conflict?.merge != null)
+              FilledButton.icon(
+                onPressed: () => _reviewConflicts(service),
+                icon: const Icon(Icons.rule_outlined),
+                label: Text(
+                  'Review ${service.conflict!.merge!.conflicts.length} conflicts',
                 ),
-              ],
-            ),
+              )
+            else
+              const Text(
+                'Choose which complete copy to keep. Export a backup first if needed.',
+              ),
+            const SizedBox(height: 10),
+            if (service.conflict?.merge == null)
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  if (service.conflict?.remoteSnapshot != null)
+                    OutlinedButton.icon(
+                      onPressed: _confirmUseCloudCopy,
+                      icon: const Icon(Icons.cloud_download_outlined),
+                      label: const Text('Use cloud copy'),
+                    ),
+                  FilledButton.icon(
+                    onPressed: _confirmKeepThisDevice,
+                    icon: const Icon(Icons.phone_android_outlined),
+                    label: const Text('Keep this device'),
+                  ),
+                ],
+              ),
           ] else ...[
             const SizedBox(height: 14),
             Wrap(
@@ -645,18 +781,13 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
               runSpacing: 8,
               children: [
                 FilledButton.icon(
-                  onPressed: service.phase == TeamSyncPhase.syncing
+                  onPressed:
+                      service.phase == TeamSyncPhase.syncing ||
+                          service.teamId == null
                       ? null
                       : () => service.syncNow(forceRemoteCheck: true),
                   icon: const Icon(Icons.sync),
                   label: const Text('Sync now'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: service.phase == TeamSyncPhase.syncing
-                      ? null
-                      : service.signOut,
-                  icon: const Icon(Icons.logout),
-                  label: const Text('Sign out'),
                 ),
               ],
             ),
@@ -704,6 +835,173 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
         ],
       ],
     );
+  }
+
+  Future<void> _editTeamDetails(TeamSyncService service) async {
+    final person = TextEditingController(text: service.displayName ?? '');
+    final team = TextEditingController(text: service.teamName ?? '');
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit your details'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: person,
+              decoration: const InputDecoration(labelText: 'Your name'),
+            ),
+            const SizedBox(height: 10),
+            if (service.isTeamOwner)
+              TextField(
+                controller: team,
+                decoration: const InputDecoration(labelText: 'Team name'),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (save == true) {
+      await service.updateDetails(
+        personName: person.text,
+        name: service.isTeamOwner ? team.text : null,
+      );
+    }
+    person.dispose();
+    team.dispose();
+  }
+
+  Future<void> _confirmRemoveMember(
+    TeamSyncService service,
+    TeamMember member,
+  ) async {
+    final remove = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Remove ${member.name}?'),
+        content: const Text(
+          'This person will lose access to future team updates.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (remove == true) await service.removeMember(member.userId);
+  }
+
+  Future<void> _changeAccountValue({
+    required String title,
+    required String label,
+    required Future<void> Function(String) onSave,
+    bool obscure = false,
+  }) async {
+    final controller = TextEditingController();
+    final save = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          obscureText: obscure,
+          decoration: InputDecoration(labelText: label),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (save == true && controller.text.trim().isNotEmpty) {
+      await onSave(controller.text);
+    }
+    controller.dispose();
+  }
+
+  Future<void> _reviewConflicts(TeamSyncService service) async {
+    final merge = service.conflict?.merge;
+    if (merge == null) return;
+    final cloudChoices = <String>{};
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Review overlapping changes'),
+          content: SizedBox(
+            width: 600,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final item in merge.conflicts) ...[
+                  Text(
+                    item.label,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  SelectableText(
+                    'This device: ${item.local == null ? 'Deleted' : jsonEncode(item.local)}',
+                  ),
+                  SelectableText(
+                    'Cloud: ${item.remote == null ? 'Deleted' : jsonEncode(item.remote)}',
+                  ),
+                  SwitchListTile(
+                    title: Text(
+                      cloudChoices.contains('${item.table}:${item.key}')
+                          ? 'Use cloud change'
+                          : 'Use this device',
+                    ),
+                    value: cloudChoices.contains('${item.table}:${item.key}'),
+                    onChanged: (value) => setDialogState(() {
+                      final key = '${item.table}:${item.key}';
+                      if (value) {
+                        cloudChoices.add(key);
+                      } else {
+                        cloudChoices.remove(key);
+                      }
+                    }),
+                  ),
+                  const Divider(),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save choices'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) await service.resolveMerge(cloudChoices);
   }
 
   Future<void> _confirmUseCloudCopy() async {
