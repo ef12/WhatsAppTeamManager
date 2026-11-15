@@ -40,17 +40,25 @@ Future<void> main() async {
     return false;
   };
   TeamSyncService? syncService;
-  if (CloudSyncConfig.isConfigured) {
+  final cloudConfig = await CloudSyncConfig.load(directory);
+  if (cloudConfig.isConfigured) {
     await Supabase.initialize(
-      url: CloudSyncConfig.url,
-      publishableKey: CloudSyncConfig.publishableKey,
+      url: cloudConfig.url,
+      publishableKey: cloudConfig.publishableKey,
     );
   }
   final store = await TeamStore.open();
-  if (CloudSyncConfig.isConfigured) {
+  if (cloudConfig.isConfigured) {
     syncService = TeamSyncService(store, Supabase.instance.client);
   }
-  runApp(TeamManagerApp(store: store, syncService: syncService));
+  runApp(
+    TeamManagerApp(
+      store: store,
+      syncService: syncService,
+      configDirectory: directory,
+      cloudConfig: cloudConfig,
+    ),
+  );
 }
 
 void _writeErrorLog(FlutterErrorDetails details) {
@@ -70,14 +78,63 @@ void _writeErrorLog(FlutterErrorDetails details) {
   }
 }
 
-class TeamManagerApp extends StatelessWidget {
+class TeamManagerApp extends StatefulWidget {
   const TeamManagerApp({
     super.key,
     required this.store,
     required this.syncService,
+    required this.configDirectory,
+    required this.cloudConfig,
   });
   final TeamStore store;
   final TeamSyncService? syncService;
+  final Directory configDirectory;
+  final CloudSyncConfig cloudConfig;
+
+  @override
+  State<TeamManagerApp> createState() => _TeamManagerAppState();
+}
+
+class _TeamManagerAppState extends State<TeamManagerApp> {
+  late TeamSyncService? _syncService = widget.syncService;
+  late CloudSyncConfig _cloudConfig = widget.cloudConfig;
+  bool _showSettingsAfterConfigure = false;
+
+  Future<String?> _configureCloud(String url, String key) async {
+    final error = CloudSyncConfig.validate(url, key);
+    if (error != null) return error;
+    final config = CloudSyncConfig(url: url.trim(), publishableKey: key.trim());
+    try {
+      await Supabase.initialize(
+        url: config.url,
+        publishableKey: config.publishableKey,
+      );
+      await config.save(widget.configDirectory);
+      if (!mounted) return null;
+      setState(() {
+        _cloudConfig = config;
+        _syncService = TeamSyncService(widget.store, Supabase.instance.client);
+        _showSettingsAfterConfigure = true;
+      });
+      return null;
+    } catch (_) {
+      return 'Could not save the project settings. Please try again.';
+    }
+  }
+
+  Future<String?> _saveCloudForRestart(String url, String key) async {
+    final error = CloudSyncConfig.validate(url, key);
+    if (error != null) return error;
+    try {
+      await CloudSyncConfig(
+        url: url.trim(),
+        publishableKey: key.trim(),
+      ).save(widget.configDirectory);
+      return null;
+    } catch (_) {
+      return 'Could not save the project settings.';
+    }
+  }
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -98,21 +155,41 @@ class TeamManagerApp extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       ),
     ),
-    home: TeamHome(store: store, syncService: syncService),
+    home: TeamHome(
+      key: ValueKey(_syncService),
+      store: widget.store,
+      syncService: _syncService,
+      configureCloud: _configureCloud,
+      cloudConfig: _cloudConfig,
+      saveCloudForRestart: _saveCloudForRestart,
+      initialPage: _showSettingsAfterConfigure ? 4 : 0,
+    ),
   );
 }
 
 class TeamHome extends StatefulWidget {
-  const TeamHome({super.key, required this.store, required this.syncService});
+  const TeamHome({
+    super.key,
+    required this.store,
+    required this.syncService,
+    required this.configureCloud,
+    required this.cloudConfig,
+    required this.saveCloudForRestart,
+    required this.initialPage,
+  });
   final TeamStore store;
   final TeamSyncService? syncService;
+  final Future<String?> Function(String url, String key) configureCloud;
+  final CloudSyncConfig cloudConfig;
+  final Future<String?> Function(String url, String key) saveCloudForRestart;
+  final int initialPage;
 
   @override
   State<TeamHome> createState() => _TeamHomeState();
 }
 
 class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
-  int page = 0;
+  late int page = widget.initialPage;
   int? selectedMatchId;
   List<Player> players = [];
   List<TeamMatch> matches = [];
@@ -123,7 +200,15 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
   final _displayNameController = TextEditingController();
   final _teamNameController = TextEditingController();
   final _inviteCodeController = TextEditingController();
+  final _projectUrlController = TextEditingController();
+  final _projectKeyController = TextEditingController();
+  String? _projectSetupError;
+  bool _savingProject = false;
+  bool _editingProject = false;
+  bool _projectRestartNeeded = false;
   int _seenCloudDataGeneration = 0;
+  final Map<String, String> _savedDrafts = {};
+  File? _savedDraftsFile;
 
   @override
   void initState() {
@@ -131,6 +216,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     widget.syncService?.addListener(_onSyncServiceChanged);
     widget.syncService?.start();
+    _loadSavedDrafts();
     refresh();
   }
 
@@ -150,6 +236,39 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     refresh();
   }
 
+  Future<void> _loadSavedDrafts() async {
+    try {
+      final directory = await getApplicationSupportDirectory();
+      final file = File(
+        '${directory.path}${Platform.pathSeparator}saved_messages.json',
+      );
+      if (!await file.exists()) return;
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is Map<String, dynamic> && mounted) {
+        setState(() {
+          _savedDraftsFile = file;
+          _savedDrafts.addAll(
+            decoded.map((key, value) => MapEntry(key, value as String)),
+          );
+        });
+      }
+    } catch (_) {
+      // A damaged saved-drafts file should not prevent using generated drafts.
+    }
+  }
+
+  Future<void> _saveDraft(String key, String value) async {
+    final directory = await getApplicationSupportDirectory();
+    _savedDraftsFile ??= File(
+      '${directory.path}${Platform.pathSeparator}saved_messages.json',
+    );
+    _savedDrafts[key] = value;
+    await _savedDraftsFile!.writeAsString(
+      jsonEncode(_savedDrafts),
+      flush: true,
+    );
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -160,6 +279,8 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     _displayNameController.dispose();
     _teamNameController.dispose();
     _inviteCodeController.dispose();
+    _projectUrlController.dispose();
+    _projectKeyController.dispose();
     super.dispose();
   }
 
@@ -593,20 +714,153 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 8),
           if (widget.syncService == null)
-            const Text(
-              'Cloud sync needs Supabase project settings. See the README '
-              'section “Set up cloud sync” for setup and build instructions.',
-            )
-          else
+            _projectSetupControls()
+          else ...[
+            Text(
+              'Project: ${Uri.tryParse(widget.cloudConfig.url)?.host ?? widget.cloudConfig.url}',
+            ),
+            TextButton.icon(
+              onPressed: () => setState(() {
+                _editingProject = !_editingProject;
+                _projectSetupError = null;
+                if (_editingProject) {
+                  _projectUrlController.text = widget.cloudConfig.url;
+                  _projectKeyController.text =
+                      widget.cloudConfig.publishableKey;
+                }
+              }),
+              icon: const Icon(Icons.settings_outlined),
+              label: Text(
+                _editingProject
+                    ? 'Cancel project change'
+                    : 'Change project settings',
+              ),
+            ),
+            if (_editingProject) _projectSettingsEditor(),
+            if (_projectRestartNeeded)
+              const Text(
+                'Project settings saved. Restart the app to use them.',
+              ),
             AnimatedBuilder(
               animation: widget.syncService!,
               builder: (context, child) =>
                   _cloudSyncControls(widget.syncService!),
             ),
+          ],
         ],
       ),
     ),
   );
+
+  Widget _projectSetupControls() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text(
+        'Connect this app to your Supabase project, then sign in below. '
+        'The project needs the database migrations described in the README.',
+      ),
+      const SizedBox(height: 14),
+      TextField(
+        controller: _projectUrlController,
+        keyboardType: TextInputType.url,
+        autocorrect: false,
+        decoration: const InputDecoration(
+          labelText: 'Supabase project URL',
+          hintText: 'https://your-project.supabase.co',
+        ),
+      ),
+      const SizedBox(height: 10),
+      TextField(
+        controller: _projectKeyController,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: const InputDecoration(
+          labelText: 'Publishable key',
+          helperText:
+              'Use the publishable key, never a secret or service-role key.',
+        ),
+      ),
+      if (_projectSetupError != null) ...[
+        const SizedBox(height: 10),
+        Text(
+          _projectSetupError!,
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
+      ],
+      const SizedBox(height: 14),
+      FilledButton.icon(
+        onPressed: _savingProject ? null : _saveProjectConfig,
+        icon: const Icon(Icons.cloud_done_outlined),
+        label: Text(_savingProject ? 'Connecting…' : 'Connect project'),
+      ),
+    ],
+  );
+
+  Future<void> _saveProjectConfig() async {
+    setState(() {
+      _savingProject = true;
+      _projectSetupError = null;
+    });
+    final error = await widget.configureCloud(
+      _projectUrlController.text,
+      _projectKeyController.text,
+    );
+    if (!mounted) return;
+    setState(() {
+      _savingProject = false;
+      _projectSetupError = error;
+    });
+  }
+
+  Widget _projectSettingsEditor() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text('Changing projects takes effect after restarting the app.'),
+      const SizedBox(height: 10),
+      TextField(
+        controller: _projectUrlController,
+        keyboardType: TextInputType.url,
+        decoration: const InputDecoration(labelText: 'Supabase project URL'),
+      ),
+      const SizedBox(height: 10),
+      TextField(
+        controller: _projectKeyController,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: const InputDecoration(labelText: 'Publishable key'),
+      ),
+      if (_projectSetupError != null)
+        Text(
+          _projectSetupError!,
+          style: TextStyle(color: Theme.of(context).colorScheme.error),
+        ),
+      const SizedBox(height: 10),
+      FilledButton(
+        onPressed: _savingProject ? null : _saveProjectForRestart,
+        child: const Text('Save project settings'),
+      ),
+    ],
+  );
+
+  Future<void> _saveProjectForRestart() async {
+    setState(() {
+      _savingProject = true;
+      _projectSetupError = null;
+    });
+    final error = await widget.saveCloudForRestart(
+      _projectUrlController.text,
+      _projectKeyController.text,
+    );
+    if (!mounted) return;
+    setState(() {
+      _savingProject = false;
+      _projectSetupError = error;
+      if (error == null) {
+        _editingProject = false;
+        _projectRestartNeeded = true;
+      }
+    });
+  }
 
   Widget _cloudSyncControls(TeamSyncService service) {
     final signedIn = service.isSignedIn;
@@ -2458,7 +2712,8 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
       );
 
   Future<void> _showDraft(String label, String draft) async {
-    final controller = TextEditingController(text: draft);
+    final key = '${selectedMatchId ?? 0}:$label';
+    final controller = TextEditingController(text: _savedDrafts[key] ?? draft);
     await showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -2508,6 +2763,32 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
                     },
               icon: const Icon(Icons.copy),
               label: const Text('Copy'),
+            ),
+            TextButton.icon(
+              onPressed: controller.text.trim().isEmpty
+                  ? null
+                  : () async {
+                      try {
+                        await _saveDraft(key, controller.text);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Message saved for this match.'),
+                            ),
+                          );
+                        }
+                      } catch (_) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Could not save this message.'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+              icon: const Icon(Icons.save_outlined),
+              label: const Text('Save'),
             ),
             FilledButton.icon(
               onPressed: controller.text.trim().isEmpty

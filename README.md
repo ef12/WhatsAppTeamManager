@@ -31,7 +31,7 @@ The manager does not use the app under the club's instructions, and the club doe
 
 Cloud sync uses Supabase email and password authentication and stores one versioned snapshot per shared team. Create a Supabase project, then run [`supabase/migrations/202610180001_team_snapshots.sql`](supabase/migrations/202610180001_team_snapshots.sql) followed by [`supabase/migrations/202611150001_shared_teams.sql`](supabase/migrations/202611150001_shared_teams.sql) in that project's SQL Editor. The second migration adds teams, membership policies, invitations, and atomic revision-checked uploads. It also enables Realtime for the shared snapshot table. Do not add a Supabase service-role key to the app; the client uses only the project URL and publishable key.
 
-Enable email/password sign-up in Supabase Authentication. If email confirmation is enabled, confirm the account using the email Supabase sends before signing in on the app. Then run the app with the project settings:
+Enable email/password sign-up in Supabase Authentication. If email confirmation is enabled, confirm the account using the email Supabase sends before signing in on the app. You can enter the project URL and publishable key in the app's Settings screen; the app stores them on that device and shows sign-in immediately. You can also supply them when building or running the app:
 
 ```powershell
 cd flutter_app
@@ -39,7 +39,7 @@ flutter run -d windows --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.
 flutter run --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 ```
 
-The URL and publishable key are app configuration, not secrets. Never use the service-role key in a client build. For GitHub distributions, define repository variables named `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY`; the workflow passes them into Android and Windows builds. Without these variables, cloud sync stays unavailable in those builds. Keep local JSON export/import available as an independent backup and recovery path.
+The URL and publishable key are app configuration, not secrets. Never use a secret or service-role key in the app. For GitHub distributions, repository variables named `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` preconfigure Android and Windows builds. Without them, the user can connect the project in Settings. Changing a connected project in Settings takes effect after restarting the app. Keep local JSON export/import available as an independent backup and recovery path.
 
 In Settings, each manager creates an account. One person creates the team and shares its invitation code; the others join with their own accounts. An existing single-user cloud snapshot is copied into the new team when its owner creates it. A new device with no local data downloads the team snapshot. If a joining device already has local data, the app asks which complete copy to keep. After that, local edits upload within about two seconds while the app is open; Realtime and periodic checks fetch others' changes. Separate row edits merge automatically. If the same row changed on both sides, Settings asks which version to keep for each overlapping item. Sync uses local durable storage and retries connection failures. A closed Android app does not promise immediate background sync; it checks again when opened.
 
@@ -47,7 +47,7 @@ In Settings, each manager creates an account. One person creates the team and sh
 
 `flutter_app/` is the Android and Windows app. The original Kotlin Android project remains in `app/` for reference. New distributions are built from Flutter.
 
-The Flutter Android app keeps the original application ID `nl.rkavic.manager` and database name `team.db`. Version `0.6.0+6` upgrades an installed `0.2` through `0.5` build when signed with the **same key**, retaining its local data. New records receive random IDs so different devices can create records independently. Windows stores a separate database in the user's application support folder.
+The Flutter Android app keeps the original application ID `nl.rkavic.manager` and database name `team.db`. Version `0.6.1+7` upgrades an installed `0.2` through `0.6` build when signed with the **same key**, retaining its local data. New records receive random IDs so different devices can create records independently. Windows stores a separate database in the user's application support folder.
 
 ## Build locally
 
@@ -72,12 +72,12 @@ Build outputs:
 
 - Android: `flutter_app/build/app/outputs/flutter-apk/app-debug.apk`
 - Windows app files: `flutter_app/build/windows/x64/runner/Release/`
-- Windows installer: `flutter_app/build/installer/RKAVIC-Team-Manager-Windows-v0.6.0-Setup.exe`
+- Windows installer: `flutter_app/build/installer/RKAVIC-Team-Manager-Windows-v0.6.1-Setup.exe`
 
 The Flutter Android debug build uses `app/debug.keystore`. Keep your existing copy to install over an earlier build without deleting data. For a fresh clone, create a debug key at that path using the standard Android debug alias and passwords, or use the manual GitHub workflow to generate one. Signing a production release requires a separate release key and Gradle configuration.
 
 ## Manual distributions from GitHub
 
-In **Actions → Build app distributions → Run workflow**, start the workflow. It uploads an Android debug APK and a Windows installer as separate artifacts, each retained for 30 days. Give Windows users the `RKAVIC-Team-Manager-Windows-v0.6.0-Setup.exe` file. It installs for the current user without an administrator prompt, adds a Start Menu shortcut, offers an optional desktop shortcut, and can be removed through Windows Installed Apps. Installing a newer version keeps the local database. Uninstall also leaves that database in the user profile, so it can be used again after reinstalling. The installer is currently unsigned; Windows may show an unrecognized app warning. A [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) may be needed on a PC that does not already have it.
+In **Actions → Build app distributions → Run workflow**, start the workflow. It uploads an Android debug APK and a Windows installer as separate artifacts, each retained for 30 days. Give Windows users the `RKAVIC-Team-Manager-Windows-v0.6.1-Setup.exe` file. It installs for the current user without an administrator prompt, adds a Start Menu shortcut, offers an optional desktop shortcut, and can be removed through Windows Installed Apps. Installing a newer version keeps the local database. Uninstall also leaves that database in the user profile, so it can be used again after reinstalling. The installer is currently unsigned; Windows may show an unrecognized app warning. A [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) may be needed on a PC that does not already have it.
 
 To make the GitHub APK update an installed copy, set the Actions secret `DEBUG_KEYSTORE_BASE64` to the Base64 encoding of the existing `app/debug.keystore`. Without it, each workflow run creates a new debug key and its APK is suitable only for a fresh install. Uninstalling Android app data deletes the local database.

@@ -1,6 +1,6 @@
 ; RKAVIC Team Manager Windows installer. Compile after flutter build windows --release.
 #ifndef AppVersion
-  #define AppVersion "0.6.0"
+  #define AppVersion "0.6.1"
 #endif
 
 [Setup]
