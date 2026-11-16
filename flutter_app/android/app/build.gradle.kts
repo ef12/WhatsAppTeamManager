@@ -45,6 +45,10 @@ android {
     }
 }
 
+dependencies {
+    implementation(files("../../../companion/android-spike/bridge.aar"))
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17

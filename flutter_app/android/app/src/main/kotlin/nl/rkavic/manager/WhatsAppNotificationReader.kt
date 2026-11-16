@@ -19,7 +19,9 @@ import java.time.ZoneId
 
 private const val READER_PREFS = "whatsapp_notification_reader"
 private const val MESSAGES_KEY = "messages"
+private const val GROUPS_KEY = "groups"
 private const val SELECTED_GROUP_KEY = "selected_group"
+private const val CAPTURE_CONSENT_KEY = "capture_consent"
 private const val MAX_MESSAGES = 5000
 private const val RETENTION_DAYS = 30L
 
@@ -31,12 +33,17 @@ class WhatsAppNotificationReaderService : NotificationListenerService() {
         val extras = notification.extras ?: return
         val title = conversationTitle(extras) ?: return
         val messages = notificationMessages(extras, sbn.postTime)
-        if (messages.isEmpty()) return
 
         val groupId = "${sbn.packageName}|$title"
         val prefs = getSharedPreferences(READER_PREFS, Context.MODE_PRIVATE)
         synchronized(ReaderCache.lock) {
-            val all = readMessages(prefs)
+            ReaderCache.recordGroup(prefs, groupId, title, sbn.postTime)
+            if (messages.isEmpty()) return
+            val selectedGroup = prefs.getString(SELECTED_GROUP_KEY, null)
+            if (!prefs.getBoolean(CAPTURE_CONSENT_KEY, false) || selectedGroup != groupId) return
+
+            // Only the currently selected group's text is retained locally.
+            val all = readMessages(prefs).filter { it.optString("chat") == groupId }.toMutableList()
             val known = all.mapTo(mutableSetOf()) { it.optString("id") }
             val added = mutableListOf<JSONObject>()
             for (message in messages) {
@@ -67,10 +74,7 @@ class WhatsAppNotificationReaderService : NotificationListenerService() {
             retained.forEach(array::put)
             prefs.edit().putString(MESSAGES_KEY, array.toString()).apply()
 
-            val selectedGroup = prefs.getString(SELECTED_GROUP_KEY, null)
-            if (selectedGroup == groupId) {
-                added.forEach { ReaderEventBus.emit("reader_message", mapOf("message" to it.toMap())) }
-            }
+            added.forEach { ReaderEventBus.emit("reader_message", mapOf("message" to it.toMap())) }
         }
     }
 
@@ -128,26 +132,40 @@ internal object ReaderCache {
     fun prefs(context: Context) = context.getSharedPreferences(READER_PREFS, Context.MODE_PRIVATE)
 
     fun messages(context: Context): JSONArray = synchronized(lock) {
+        if (!hasCaptureConsent(context)) {
+            prefs(context).edit().remove(MESSAGES_KEY).apply()
+            return@synchronized JSONArray()
+        }
         val retained = readMessages(prefs(context))
             .filter { System.currentTimeMillis() - parseTime(it) <= RETENTION_DAYS * 24 * 60 * 60 * 1000 }
         JSONArray().apply { retained.forEach(::put) }
     }
 
     fun groups(context: Context): JSONArray {
-        val latestByGroup = linkedMapOf<String, JSONObject>()
-        val messages = messages(context)
-        for (index in 0 until messages.length()) {
-            val item = messages.optJSONObject(index) ?: continue
-            val id = item.optString("chat")
-            if (id.isNotEmpty()) latestByGroup[id] = item
-        }
+        val selected = selectedGroup(context)
+        val raw = prefs(context).getString(GROUPS_KEY, null)
+        val saved = raw?.let { runCatching { JSONArray(it) }.getOrDefault(JSONArray()) }
+            ?: JSONArray()
         return JSONArray().apply {
-            latestByGroup.entries
-                .sortedByDescending { parseTime(it.value) }
-                .forEach { (id, item) ->
-                    put(JSONObject().put("id", id).put("name", item.optString("groupName", id)))
-                }
+            for (index in 0 until saved.length()) {
+                val group = saved.optJSONObject(index) ?: continue
+                put(JSONObject(group.toString()).put("selected", group.optString("id") == selected))
+            }
         }
+    }
+
+    fun recordGroup(prefs: android.content.SharedPreferences, id: String, name: String, seenAt: Long) {
+        val known = runCatching { JSONArray(prefs.getString(GROUPS_KEY, "[]")) }
+            .getOrDefault(JSONArray())
+        val groups = (0 until known.length()).mapNotNull { known.optJSONObject(it) }
+            .associateBy { it.optString("id") }.toMutableMap()
+        groups[id] = JSONObject()
+            .put("id", id)
+            .put("name", name)
+            .put("lastSeen", Instant.ofEpochMilli(seenAt).toString())
+        val updated = JSONArray()
+        groups.values.sortedBy { it.optString("name").lowercase() }.forEach(updated::put)
+        prefs.edit().putString(GROUPS_KEY, updated.toString()).apply()
     }
 
     fun read(context: Context, mode: String): JSONObject {
@@ -188,7 +206,45 @@ internal object ReaderCache {
     }
 
     fun select(context: Context, groupId: String) {
-        prefs(context).edit().putString(SELECTED_GROUP_KEY, groupId).apply()
+        val prefs = prefs(context)
+        synchronized(lock) {
+            val previousGroup = prefs.getString(SELECTED_GROUP_KEY, null)
+            val retained = if (previousGroup == groupId && hasCaptureConsent(context)) {
+                readMessages(prefs).filter { it.optString("chat") == groupId }
+            } else {
+                emptyList()
+            }
+            val array = JSONArray().apply { retained.forEach(::put) }
+            prefs.edit()
+                .putString(SELECTED_GROUP_KEY, groupId)
+                .putString(MESSAGES_KEY, array.toString())
+                .putBoolean(CAPTURE_CONSENT_KEY, previousGroup == groupId && hasCaptureConsent(context))
+                .apply()
+        }
+    }
+
+    fun setCaptureConsent(context: Context, allowed: Boolean) {
+        val prefs = prefs(context)
+        synchronized(lock) {
+            val hadConsent = prefs.getBoolean(CAPTURE_CONSENT_KEY, false)
+            val editor = prefs.edit().putBoolean(CAPTURE_CONSENT_KEY, allowed)
+            if (!allowed || !hadConsent) editor.remove(MESSAGES_KEY)
+            editor.apply()
+        }
+    }
+
+    fun hasCaptureConsent(context: Context): Boolean =
+        prefs(context).getBoolean(CAPTURE_CONSENT_KEY, false)
+
+    fun selectedGroup(context: Context): String? =
+        prefs(context).getString(SELECTED_GROUP_KEY, null)
+
+    fun clearMessages(context: Context) {
+        prefs(context).edit().remove(MESSAGES_KEY).apply()
+    }
+
+    fun enforceConsent(context: Context) {
+        if (!hasCaptureConsent(context)) clearMessages(context)
     }
 }
 

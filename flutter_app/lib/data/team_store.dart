@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -76,6 +77,36 @@ class TeamMatch {
     row['opponent_score'] as int?,
     row['done'] == 1,
   );
+}
+
+class AttendancePollLink {
+  const AttendancePollLink({
+    required this.matchId,
+    required this.groupId,
+    required this.pollId,
+    required this.question,
+    required this.options,
+    required this.linkedAt,
+  });
+
+  final int matchId;
+  final String groupId;
+  final String pollId;
+  final String question;
+  final List<String> options;
+  final DateTime linkedAt;
+
+  factory AttendancePollLink.fromRow(Map<String, Object?> row) =>
+      AttendancePollLink(
+        matchId: row['match_id'] as int,
+        groupId: row['group_id'] as String,
+        pollId: row['poll_id'] as String,
+        question: row['question'] as String,
+        options: (jsonDecode(row['options_json'] as String) as List<dynamic>)
+            .whereType<String>()
+            .toList(),
+        linkedAt: DateTime.parse(row['linked_at'] as String),
+      );
 }
 
 class Duty {
@@ -213,7 +244,7 @@ class TeamStore {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 7,
+        version: 8,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -244,6 +275,7 @@ class TeamStore {
           await db.execute(
             'CREATE TABLE parent_duty_exemptions(parent_name TEXT PRIMARY KEY)',
           );
+          await _createWhatsAppPollLinks(db);
           await _createSyncTracking(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -345,6 +377,7 @@ class TeamStore {
               'ALTER TABLE app_sync_state ADD COLUMN baseline_payload TEXT',
             );
           }
+          if (oldVersion < 8) await _createWhatsAppPollLinks(db);
         },
       ),
     );
@@ -498,6 +531,15 @@ class TeamStore {
     }
   }
 
+  static Future<void> _createWhatsAppPollLinks(DatabaseExecutor db) async {
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS whatsapp_attendance_polls('
+      'match_id INTEGER PRIMARY KEY,group_id TEXT NOT NULL,poll_id TEXT NOT NULL,'
+      'question TEXT NOT NULL,options_json TEXT NOT NULL,linked_at TEXT NOT NULL,'
+      'UNIQUE(group_id,poll_id))',
+    );
+  }
+
   Future<TeamBackup> exportBackup() => _db.transaction(
     (txn) async => TeamBackup.capture(
       players: await txn.query('players', orderBy: 'id'),
@@ -547,6 +589,10 @@ class TeamStore {
     for (final row in backup.parentDutyExemptions) {
       await txn.insert('parent_duty_exemptions', row);
     }
+    await txn.delete(
+      'whatsapp_attendance_polls',
+      where: 'match_id NOT IN (SELECT id FROM matches)',
+    );
   }
 
   Future<List<Player>> players() async => (await _db.query(
@@ -678,6 +724,11 @@ class TeamStore {
   }
 
   Future<void> deleteMatch(int id) => _db.transaction((txn) async {
+    await txn.delete(
+      'whatsapp_attendance_polls',
+      where: 'match_id=?',
+      whereArgs: [id],
+    );
     await txn.delete('matches', where: 'id=?', whereArgs: [id]);
     await txn.delete('attendance', where: 'match_id=?', whereArgs: [id]);
     await txn.delete('duties', where: 'match_id=?', whereArgs: [id]);
@@ -694,6 +745,50 @@ class TeamStore {
       for (final row in rows) row['player_id'] as int: row['status'] as int,
     };
   }
+
+  Future<AttendancePollLink?> attendancePollLink(int matchId) async {
+    final rows = await _db.query(
+      'whatsapp_attendance_polls',
+      where: 'match_id=?',
+      whereArgs: [matchId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : AttendancePollLink.fromRow(rows.single);
+  }
+
+  Future<int?> matchLinkedToPoll(String groupId, String pollId) async {
+    final rows = await _db.query(
+      'whatsapp_attendance_polls',
+      columns: ['match_id'],
+      where: 'group_id=? AND poll_id=?',
+      whereArgs: [groupId, pollId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.single['match_id'] as int;
+  }
+
+  /// Poll links stay local so raw WhatsApp group/poll identifiers and text are
+  /// not included in the shared team backup or Supabase sync payload.
+  Future<void> linkAttendancePoll(AttendancePollLink link) async {
+    final linkedMatch = await matchLinkedToPoll(link.groupId, link.pollId);
+    if (linkedMatch != null && linkedMatch != link.matchId) {
+      throw StateError('This poll is already linked to another match.');
+    }
+    await _db.insert('whatsapp_attendance_polls', {
+      'match_id': link.matchId,
+      'group_id': link.groupId,
+      'poll_id': link.pollId,
+      'question': link.question,
+      'options_json': jsonEncode(link.options),
+      'linked_at': link.linkedAt.toUtc().toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> unlinkAttendancePoll(int matchId) => _db.delete(
+    'whatsapp_attendance_polls',
+    where: 'match_id=?',
+    whereArgs: [matchId],
+  );
 
   Future<Map<int, ParticipationSummary>> participationByPlayer() async {
     final matchCountRows = await _db.rawQuery(

@@ -17,10 +17,18 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
   final String _dataDirectory;
   String? _selectedGroupId;
   String? _selectedGroupName;
+  bool _selectionPending = false;
   DatabaseFactory? _databaseFactory;
+  final StreamController<Map<String, dynamic>> _eventController =
+      StreamController<Map<String, dynamic>>.broadcast();
+  Process? _companionProcess;
+  Directory? _companionDirectory;
 
   String get _databasePath => path.join(_dataDirectory, 'messages.sqlite');
   String get _selectionPath => path.join(_dataDirectory, 'selected-group.json');
+  String get _requestPath =>
+      path.join(_dataDirectory, 'selection-request.json');
+  String get _groupsPath => path.join(_dataDirectory, 'groups.json');
 
   static String _defaultDataDirectory() {
     final localAppData = Platform.environment['LOCALAPPDATA'];
@@ -42,47 +50,160 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
   }
 
   @override
-  Stream<Map<String, dynamic>> get events => const Stream.empty();
+  Stream<Map<String, dynamic>> get events => _eventController.stream;
 
   @override
   Future<void> start() async {
-    if (!File(_databasePath).existsSync()) {
+    if (_companionProcess != null) return;
+    final companion = _findCompanionDirectory();
+    if (companion == null) {
       throw StateError(
-        'Start the Windows WhatsApp companion first, then return here to read its fetched history.',
+        'The WhatsApp reader files are missing. Reinstall the app with its companion files.',
       );
     }
+    _companionDirectory = companion;
+    final process = await Process.start(
+      'node',
+      ['src/reader.js'],
+      workingDirectory: companion.path,
+      environment: {
+        ...Platform.environment,
+        'RKAVIC_APP_MODE': '1',
+        'RKAVIC_CAPTURE_CONSENT': 'YES',
+      },
+    );
+    _companionProcess = process;
+    _forwardOutput(process.stdout);
+    _forwardOutput(process.stderr, isError: true);
+    process.exitCode.then((code) {
+      if (identical(_companionProcess, process)) _companionProcess = null;
+      _eventController.add({'type': 'companion_exit', 'code': code});
+    });
     await _loadSelection();
+  }
+
+  Directory? _findCompanionDirectory() {
+    final configured = Platform.environment['RKAVIC_COMPANION_DIR'];
+    if (configured != null &&
+        File(path.join(configured, 'src', 'reader.js')).existsSync()) {
+      return Directory(configured);
+    }
+    var directory = Directory(path.dirname(Platform.resolvedExecutable));
+    for (var depth = 0; depth < 10; depth++) {
+      final candidate = Directory(path.join(directory.path, 'companion'));
+      if (File(path.join(candidate.path, 'src', 'reader.js')).existsSync()) {
+        return candidate;
+      }
+      final parent = directory.parent;
+      if (parent.path == directory.path) break;
+      directory = parent;
+    }
+    return null;
+  }
+
+  void _forwardOutput(Stream<List<int>> output, {bool isError = false}) {
+    output.transform(utf8.decoder).transform(const LineSplitter()).listen((
+      line,
+    ) {
+      const prefix = 'RKAVIC_EVENT:';
+      if (line.startsWith(prefix)) {
+        try {
+          _eventController.add(
+            jsonDecode(line.substring(prefix.length)) as Map<String, dynamic>,
+          );
+          return;
+        } catch (_) {}
+      }
+      _eventController.add({
+        'type': isError ? 'companion_error' : 'companion_log',
+        'text': line,
+      });
+    });
   }
 
   @override
   Future<List<WhatsAppReaderGroup>> loadGroups() async {
     await _loadSelection();
-    if (_selectedGroupId == null || _selectedGroupName == null) return [];
-    return [
-      WhatsAppReaderGroup(id: _selectedGroupId!, name: _selectedGroupName!),
-    ];
+    final groupsFile = File(_groupsPath);
+    if (!await groupsFile.exists()) return [];
+    final values = jsonDecode(await groupsFile.readAsString()) as List<dynamic>;
+    return values
+        .whereType<Map<String, dynamic>>()
+        .map(
+          (value) => WhatsAppReaderGroup(
+            id: value['id'] as String,
+            name: value['name'] as String,
+            selected: value['id'] == _selectedGroupId,
+          ),
+        )
+        .toList();
+  }
+
+  @override
+  Future<List<WhatsAppPollSnapshot>> availablePolls() async {
+    await _loadSelection();
+    final groupId = _selectedGroupId;
+    if (groupId == null || !File(_databasePath).existsSync()) return const [];
+    final db = await _factory.openDatabase(
+      _databasePath,
+      options: OpenDatabaseOptions(readOnly: true, singleInstance: false),
+    );
+    try {
+      final rows = await db.query(
+        'captured_messages',
+        where: 'group_id = ? AND message_type = ?',
+        whereArgs: [groupId, 'poll'],
+        orderBy: 'sent_at DESC',
+        limit: 100,
+      );
+      final polls = <WhatsAppPollSnapshot>[];
+      for (final row in rows) {
+        polls.add(WhatsAppPollSnapshot.fromJson(await _withDetails(db, row)));
+      }
+      return polls;
+    } finally {
+      await db.close();
+    }
   }
 
   Future<void> _loadSelection() async {
     final file = File(_selectionPath);
     if (!await file.exists()) {
-      _selectedGroupId = null;
-      _selectedGroupName = null;
+      if (!_selectionPending) {
+        _selectedGroupId = null;
+        _selectedGroupName = null;
+      }
       return;
     }
     final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    _selectedGroupId = data['id'] as String?;
-    _selectedGroupName = data['name'] as String?;
+    final diskId = data['id'] as String?;
+    if (_selectionPending && diskId == _selectedGroupId) {
+      _selectionPending = false;
+    } else if (!_selectionPending) {
+      _selectedGroupId = diskId;
+      _selectedGroupName = data['name'] as String?;
+    }
   }
 
   @override
   Future<void> selectGroup(String groupId) async {
-    await _loadSelection();
-    if (groupId != _selectedGroupId) {
+    final groups = await loadGroups();
+    final group = groups
+        .where((candidate) => candidate.id == groupId)
+        .firstOrNull;
+    if (group == null)
       throw StateError(
-        'Choose the group in the Windows companion, then refresh this screen.',
+        'That group is not available from the connected WhatsApp account.',
       );
-    }
+    final file = File(_requestPath);
+    final temporary = File('$_requestPath.tmp');
+    await temporary.writeAsString(
+      jsonEncode({'id': group.id, 'name': group.name}),
+    );
+    await temporary.rename(file.path);
+    _selectedGroupId = group.id;
+    _selectedGroupName = group.name;
+    _selectionPending = true;
   }
 
   @override
@@ -192,6 +313,12 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
   ) async {
     final id = row['message_id'] as String;
     final senderId = row['sender_id'] as String? ?? 'member';
+    final savedSenderName = row['sender_name'] as String?;
+    final senderName = savedSenderName?.trim().isNotEmpty == true
+        ? savedSenderName!.trim()
+        : senderId.endsWith('@lid')
+        ? 'Unknown participant'
+        : senderId;
     final isPoll = row['message_type'] == 'poll';
     final poll = isPoll && row['poll_json'] is String
         ? jsonDecode(row['poll_json'] as String) as Map<String, dynamic>
@@ -214,7 +341,7 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
       'id': id,
       'chat': row['group_id'],
       'senderId': senderId,
-      'sender': senderId == 'me' ? 'you' : senderId,
+      'sender': senderId == 'me' ? 'you' : senderName,
       'timestamp': row['sent_at'],
       'kind': isPoll ? 'poll' : 'message',
       'text': isPoll ? poll['question'] ?? row['text'] : row['text'],
@@ -225,7 +352,7 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
               jsonDecode(vote['selected_options'] as String) as List<dynamic>;
           return {
             'voterId': vote['voter_id'],
-            'voter': vote['voter_id'],
+            'voter': vote['voter_name'] as String? ?? vote['voter_id'],
             'options': selected
                 .map(
                   (option) => option is String
@@ -242,7 +369,8 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
             .map(
               (reaction) => {
                 'senderId': reaction['sender_id'],
-                'sender': reaction['sender_id'],
+                'sender':
+                    reaction['sender_name'] as String? ?? reaction['sender_id'],
                 'emoji': reaction['emoji'],
                 'at': reaction['reacted_at'],
               },
@@ -252,5 +380,9 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
   }
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop() async {
+    final process = _companionProcess;
+    _companionProcess = null;
+    process?.kill(ProcessSignal.sigterm);
+  }
 }

@@ -17,6 +17,7 @@ import 'data/team_store.dart';
 import 'data/team_sync_service.dart';
 import 'data/whatsapp_message_writer.dart';
 import 'widgets/android_whatsapp_spike.dart';
+import 'widgets/whatsapp_attendance_poll_card.dart';
 
 const forest = Color(0xFFF58221);
 const lime = Color(0xFFFFF3E6);
@@ -623,7 +624,8 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
         'Manage your profile, team access, and automatic sync.',
       ),
       _cloudSyncCard(),
-      if (Platform.isAndroid || Platform.isWindows) ...[
+      if ((Platform.isAndroid || Platform.isWindows) &&
+          (widget.syncService?.isTeamOwner ?? false)) ...[
         const SizedBox(height: 16),
         const WhatsAppReaderCard(),
       ],
@@ -2453,6 +2455,10 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
                     .toList(),
               ),
             ),
+          if (!match.done && widget.syncService?.isTeamOwner == true) ...[
+            const SizedBox(height: 12),
+            WhatsAppAttendancePollCard(store: widget.store, match: match),
+          ],
           const SizedBox(height: 28),
           _section(
             match.isHome ? 'Home match shifts' : 'Match duties',

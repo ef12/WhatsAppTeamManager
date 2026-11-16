@@ -5,6 +5,11 @@ const { stdin, stdout } = require('node:process');
 const { DatabaseSync } = require('node:sqlite');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const appMode = process.env.RKAVIC_APP_MODE === '1';
+
+function emitAppEvent(event) {
+  if (appMode) process.stdout.write(`RKAVIC_EVENT:${JSON.stringify(event)}\n`);
+}
 
 const retentionDays = 30;
 const root = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE, 'AppData', 'Local');
@@ -19,6 +24,7 @@ database.exec(`
     message_id TEXT PRIMARY KEY,
     group_id TEXT NOT NULL,
     sender_id TEXT,
+    sender_name TEXT,
     sent_at TEXT NOT NULL,
     text TEXT NOT NULL,
     message_type TEXT NOT NULL DEFAULT 'chat',
@@ -28,6 +34,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS captured_poll_votes (
     poll_message_id TEXT NOT NULL,
     voter_id TEXT NOT NULL,
+    voter_name TEXT,
     selected_options TEXT NOT NULL,
     interacted_at TEXT NOT NULL,
     PRIMARY KEY (poll_message_id, voter_id)
@@ -36,6 +43,7 @@ database.exec(`
     message_id TEXT NOT NULL,
     group_id TEXT NOT NULL,
     sender_id TEXT NOT NULL,
+    sender_name TEXT,
     emoji TEXT NOT NULL,
     reacted_at TEXT NOT NULL,
     PRIMARY KEY (message_id, sender_id)
@@ -44,27 +52,37 @@ database.exec(`
 const messageColumns = new Set(database.prepare('PRAGMA table_info(captured_messages)').all().map((column) => column.name));
 if (!messageColumns.has('message_type')) database.exec("ALTER TABLE captured_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'chat'");
 if (!messageColumns.has('poll_json')) database.exec('ALTER TABLE captured_messages ADD COLUMN poll_json TEXT');
+if (!messageColumns.has('sender_name')) database.exec('ALTER TABLE captured_messages ADD COLUMN sender_name TEXT');
+const voteColumns = new Set(database.prepare('PRAGMA table_info(captured_poll_votes)').all().map((column) => column.name));
+if (!voteColumns.has('voter_name')) database.exec('ALTER TABLE captured_poll_votes ADD COLUMN voter_name TEXT');
+const reactionColumns = new Set(database.prepare('PRAGMA table_info(captured_reactions)').all().map((column) => column.name));
+if (!reactionColumns.has('sender_name')) database.exec('ALTER TABLE captured_reactions ADD COLUMN sender_name TEXT');
 const deleteOld = database.prepare('DELETE FROM captured_messages WHERE sent_at < ?');
 deleteOld.run(new Date(Date.now() - retentionMs).toISOString());
 database.exec('DELETE FROM captured_poll_votes WHERE poll_message_id NOT IN (SELECT message_id FROM captured_messages)');
 const insertMessage = database.prepare(`
   INSERT OR IGNORE INTO captured_messages
-    (message_id, group_id, sender_id, sent_at, text, message_type, poll_json)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+    (message_id, group_id, sender_id, sender_name, sent_at, text, message_type, poll_json)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
+const updateMessageSender = database.prepare('UPDATE captured_messages SET sender_name = ? WHERE message_id = ?');
+const hasCapturedMessage = database.prepare('SELECT 1 FROM captured_messages WHERE message_id = ?');
 const upsertVote = database.prepare(`
-  INSERT INTO captured_poll_votes (poll_message_id, voter_id, selected_options, interacted_at)
-  VALUES (?, ?, ?, ?)
+  INSERT INTO captured_poll_votes (poll_message_id, voter_id, voter_name, selected_options, interacted_at)
+  VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(poll_message_id, voter_id) DO UPDATE SET
+    voter_name = COALESCE(excluded.voter_name, captured_poll_votes.voter_name),
     selected_options = excluded.selected_options, interacted_at = excluded.interacted_at
 `);
 const hasCapturedPoll = database.prepare("SELECT 1 FROM captured_messages WHERE message_id = ? AND message_type = 'poll'");
 const upsertReaction = database.prepare(`
-  INSERT INTO captured_reactions (message_id, group_id, sender_id, emoji, reacted_at)
-  VALUES (?, ?, ?, ?, ?)
+  INSERT INTO captured_reactions (message_id, group_id, sender_id, sender_name, emoji, reacted_at)
+  VALUES (?, ?, ?, ?, ?, ?)
   ON CONFLICT(message_id, sender_id) DO UPDATE SET
+    sender_name = COALESCE(excluded.sender_name, captured_reactions.sender_name),
     emoji = excluded.emoji, reacted_at = excluded.reacted_at
 `);
+const updateReactionSender = database.prepare('UPDATE captured_reactions SET sender_name = ? WHERE message_id = ? AND sender_id = ?');
 const deleteReaction = database.prepare('DELETE FROM captured_reactions WHERE message_id = ? AND sender_id = ?');
 function pruneExpired() {
   deleteOld.run(new Date(Date.now() - retentionMs).toISOString());
@@ -74,6 +92,8 @@ function pruneExpired() {
 
 const rl = readline.createInterface({ input: stdin, output: stdout });
 const selectionPath = path.join(dataDirectory, 'selected-group.json');
+const selectionRequestPath = path.join(dataDirectory, 'selection-request.json');
+const groupsPath = path.join(dataDirectory, 'groups.json');
 let client;
 let stopped = false;
 
@@ -84,6 +104,12 @@ function savedSelection() {
   } catch (_) {
     return null;
   }
+}
+
+function writeJsonAtomic(filePath, value) {
+  const temporaryPath = `${filePath}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2));
+  fs.renameSync(temporaryPath, filePath);
 }
 
 async function chooseGroup(groups) {
@@ -127,7 +153,7 @@ function isPollMessage(message) {
     (typeof message.pollName === 'string' && Array.isArray(message.pollOptions));
 }
 
-function captureMessage(message, groupId) {
+function captureMessage(message, groupId, senderName = null) {
   const isPoll = isPollMessage(message);
   if (!isPoll && (message.type !== 'chat' || !message.body || !message.body.trim())) return false;
   const poll = isPoll ? {
@@ -137,15 +163,19 @@ function captureMessage(message, groupId) {
   } : null;
   const text = isPoll ? `${poll.question}\n${poll.options.map((option) => `• ${option}`).join('\n')}` : message.body;
   const sentAt = new Date(message.timestamp * 1000).toISOString();
+  const senderId = message.fromMe ? 'me' : (message.author || message.from);
+  const displayName = senderName && !senderName.endsWith('@lid') ? senderName : null;
   const result = insertMessage.run(
     message.id._serialized,
     groupId,
-    message.fromMe ? 'me' : (message.author || message.from),
+    senderId,
+    displayName,
     sentAt,
     text,
     isPoll ? 'poll' : 'chat',
     poll ? JSON.stringify(poll) : null,
   );
+  if (displayName && senderId !== 'me') updateMessageSender.run(displayName, message.id._serialized);
   if (result.changes) pruneExpired();
   return result.changes === 1;
 }
@@ -163,14 +193,15 @@ function displayMessage(message) {
   return message.body;
 }
 
-function captureVote(vote, groupId) {
+function captureVote(vote, groupId, voterName = null) {
   const pollMessage = vote.parentMessage;
   const chatId = pollMessage && (pollMessage.fromMe ? pollMessage.to : pollMessage.from);
   const pollMessageId = pollMessage?.id?._serialized || pollMessage?.id?.$1 ||
     vote.parentMsgKey?._serialized || vote.parentMsgKey?.$1;
   if (chatId !== groupId || !pollMessageId || !vote.voter ||
       !hasCapturedPoll.get(pollMessageId)) return false;
-  upsertVote.run(pollMessageId, vote.voter, JSON.stringify(vote.selectedOptions || []),
+  const displayName = voterName && !voterName.endsWith('@lid') ? voterName : null;
+  upsertVote.run(pollMessageId, vote.voter, displayName, JSON.stringify(vote.selectedOptions || []),
     new Date(vote.interractedAtTs || Date.now()).toISOString());
   return true;
 }
@@ -199,7 +230,7 @@ async function voterLabel(voterId) {
       }
     } catch (_) { /* WhatsApp may not expose a LID-to-phone mapping. */ }
   }
-  voterLabels.set(voterId, resolvedLabel);
+  if (resolvedLabel !== voterId || !voterId.endsWith('@lid')) voterLabels.set(voterId, resolvedLabel);
   return resolvedLabel;
 }
 
@@ -214,15 +245,17 @@ function normalizedId(value) {
   return value?._serialized || value?.$1 || null;
 }
 
-function captureReaction(messageId, groupId, senderId, emoji, timestamp) {
+function captureReaction(messageId, groupId, senderId, emoji, timestamp, senderName = null) {
   if (!messageId || !groupId || !senderId) return false;
   if (!emoji) {
     deleteReaction.run(messageId, senderId);
     return true;
   }
   const timeValue = timestamp || Math.floor(Date.now() / 1000);
-  upsertReaction.run(messageId, groupId, senderId, emoji,
+  const displayName = senderName && !senderName.endsWith('@lid') ? senderName : null;
+  upsertReaction.run(messageId, groupId, senderId, displayName, emoji,
     new Date(timeValue > 1e12 ? timeValue : timeValue * 1000).toISOString());
+  if (displayName) updateReactionSender.run(displayName, messageId, senderId);
   return true;
 }
 
@@ -233,8 +266,9 @@ async function readMessageReactions(message, groupId) {
     for (const reactionGroup of groups || []) {
       for (const sender of reactionGroup.senders || []) {
         const senderId = sender.senderId || sender.id?.participant || sender.id?.remote || 'unknown';
-        captureReaction(message.id._serialized, groupId, senderId, sender.reaction || reactionGroup.aggregateEmoji || reactionGroup.id, sender.timestamp);
-        reactions.push({ senderId, emoji: sender.reaction || reactionGroup.aggregateEmoji || reactionGroup.id });
+        const senderName = await voterLabel(senderId);
+        captureReaction(message.id._serialized, groupId, senderId, sender.reaction || reactionGroup.aggregateEmoji || reactionGroup.id, sender.timestamp, senderName);
+        reactions.push({ senderId, senderName, emoji: sender.reaction || reactionGroup.aggregateEmoji || reactionGroup.id });
       }
     }
     return reactions;
@@ -259,7 +293,7 @@ async function printPollVotes(votes, groupId) {
   const latestByVoter = new Map();
   const orderedVotes = [...votes].sort((a, b) => (a.interractedAtTs || 0) - (b.interractedAtTs || 0));
   for (const vote of orderedVotes) {
-    captureVote(vote, groupId);
+    captureVote(vote, groupId, vote.voter ? await voterLabel(vote.voter) : null);
     if (vote.voter) latestByVoter.set(vote.voter, vote);
   }
   if (!latestByVoter.size) {
@@ -274,8 +308,33 @@ async function printPollVotes(votes, groupId) {
   }
 }
 
-async function sendLoop(selection) {
-  console.log(`Text sending is available only to "${selection.name}". Each message requires typing SEND to confirm.`);
+async function cacheGroupHistory(selection) {
+  try {
+    const chat = await client.getChatById(selection.id);
+    if (!chat || !chat.isGroup) throw new Error('Selected group is unavailable.');
+    const history = await chat.fetchMessages({ limit: 1000 });
+    for (const message of history) {
+      const chatId = message.fromMe ? message.to : message.from;
+      if (chatId !== selection.id || !isReadableTextMessage(message)) continue;
+      captureMessage(message, selection.id, await senderLabel(message));
+      if (isPollMessage(message)) {
+        try {
+          const votes = await client.getPollVotes(message.id._serialized);
+          for (const vote of votes || []) {
+            captureVote(vote, selection.id, vote.voter ? await voterLabel(vote.voter) : null);
+          }
+        } catch (_) { /* Vote history is best-effort when WhatsApp omits it. */ }
+      }
+      await readMessageReactions(message, selection.id);
+    }
+    console.log(`Loaded ${history.length} recent message(s) for ${selection.name}.`);
+  } catch (error) {
+    console.error(`Could not load recent messages for ${selection.name}: ${error.message || error}`);
+  }
+}
+
+async function sendLoop(getSelection) {
+  console.log('Text sending is available only to the selected group. Each message requires typing SEND to confirm.');
   while (!stopped) {
     const text = (await rl.question('Message to send (or /exit to stop the reader): ')).trim();
     if (text.toLowerCase() === '/exit') {
@@ -283,6 +342,7 @@ async function sendLoop(selection) {
       return;
     }
     if (!text) continue;
+    const selection = getSelection();
     console.log(`\nTo: ${selection.name}\nMessage:\n${text}\n`);
     const confirm = (await rl.question(`Send this message to "${selection.name}"? Type SEND to confirm: `)).trim();
     if (confirm !== 'SEND') {
@@ -310,9 +370,11 @@ async function main() {
   console.log('RKAVIC WhatsApp group reader — reader and sender prototype');
   console.log(`Stores selected-group text, polls, and reactions locally for ${retentionDays} days. No media is saved.`);
   console.log('This unofficial client can break or lead to WhatsApp account restrictions.');
-  const consent = (await rl.question(
-    'Confirm group members have been informed about capture. Type YES to continue: ',
-  )).trim();
+  const consent = appMode
+    ? process.env.RKAVIC_CAPTURE_CONSENT
+    : (await rl.question(
+      'Confirm group members have been informed about capture. Type YES to continue: ',
+    )).trim();
   if (consent !== 'YES') return shutdown();
 
   const chromePaths = [
@@ -329,30 +391,65 @@ async function main() {
     puppeteer: { executablePath: chromePath },
     authStrategy: new LocalAuth({
       clientId: 'rkavic-reader',
-      dataPath: path.join(dataDirectory, 'linked-device'),
+      dataPath: path.join(dataDirectory, appMode ? 'linked-device-app' : 'linked-device'),
     }),
   });
   client.on('qr', (qr) => {
+    if (appMode) {
+      emitAppEvent({ type: 'pairing_qr', qr });
+      return;
+    }
     console.log('\nScan using WhatsApp → Linked devices → Link a device.');
     qrcode.generate(qr, { small: true });
   });
   client.on('authenticated', () => console.log('Linked. Loading groups…'));
-  client.on('auth_failure', (error) => console.error(`Authentication failed: ${error}`));
-  client.on('disconnected', (reason) => console.error(`Disconnected: ${reason}`));
+  client.on('auth_failure', (error) => {
+    console.error(`Authentication failed: ${error}`);
+    emitAppEvent({ type: 'auth_failure', message: String(error) });
+  });
+  client.on('disconnected', (reason) => {
+    console.error(`Disconnected: ${reason}`);
+    emitAppEvent({ type: 'disconnected', reason: String(reason) });
+  });
   client.on('ready', async () => {
     try {
       const chats = await client.getChats();
       const groups = chats.filter((chat) => chat.isGroup);
+      writeJsonAtomic(groupsPath, groups.map((group) => ({
+        id: group.id._serialized,
+        name: group.name,
+      })).sort((left, right) => left.name.localeCompare(right.name)));
+      emitAppEvent({ type: 'groups_loaded', count: groups.length });
       if (!groups.length) {
         console.log('No groups are available to this linked account.');
         return;
       }
-      const selection = await chooseGroup(groups);
-      if (!selection) return shutdown();
-      const readChoice = (await rl.question(
-        'What should I read? [1] All messages and polls from today  [2] Latest message (show all votes if poll)  [Enter] Skip: ',
-      )).trim().toLowerCase();
-      if (['1', '2'].includes(readChoice)) {
+      try {
+        const request = JSON.parse(fs.readFileSync(selectionRequestPath, 'utf8'));
+        const requestedGroup = groups.find((group) => group.id._serialized === request.id);
+        if (requestedGroup) {
+          writeJsonAtomic(selectionPath, {
+            id: requestedGroup.id._serialized,
+            name: requestedGroup.name,
+          });
+        }
+      } catch (_) { /* No pending app selection. */ }
+      let selection;
+      let readChoice;
+      if (appMode) {
+        const saved = savedSelection();
+        selection = saved && groups.some((group) => group.id._serialized === saved.id)
+          ? saved
+          : null;
+        readChoice = selection ? '1' : '';
+      } else {
+        selection = await chooseGroup(groups);
+        if (!selection) return shutdown();
+        readChoice = (await rl.question(
+          'What should I read? [1] All messages and polls from today  [2] Latest message (show all votes if poll)  [Enter] Skip: ',
+        )).trim().toLowerCase();
+      }
+      if (!appMode && ['1', '2'].includes(readChoice)) {
         const chat = await client.getChatById(selection.id);
         if (!chat || !chat.isGroup) throw new Error('Selected group is unavailable.');
         // Puppeteer may serialize Infinity as null. whatsapp-web.js then skips
@@ -364,6 +461,14 @@ async function main() {
           const chatId = message.fromMe ? message.to : message.from;
           return chatId === selection.id && isReadableTextMessage(message);
         });
+      for (const message of availableMessages) {
+        if (!hasCapturedMessage.get(message.id._serialized)) continue;
+        const sender = await senderLabel(message);
+        const senderId = message.fromMe ? 'me' : (message.author || message.from);
+        if (senderId !== 'me' && sender && !sender.endsWith('@lid')) {
+          updateMessageSender.run(sender, message.id._serialized);
+        }
+      }
         const typeSummary = new Map();
         for (const message of availableMessages) {
           const key = `${message.type}${isToday(message.timestamp) ? ' (today)' : ''}${isPollMessage(message) ? ' [poll]' : ''}`;
@@ -380,6 +485,9 @@ async function main() {
             let votes = [];
             try {
               votes = await client.getPollVotes(poll.id._serialized);
+              for (const vote of votes || []) {
+                captureVote(vote, selection.id, vote.voter ? await voterLabel(vote.voter) : null);
+              }
             } catch (error) {
               if (isToday(poll.timestamp)) {
                 console.log(`Could not load votes for poll "${poll.pollName || poll.body}": ${error.message || error}`);
@@ -400,10 +508,10 @@ async function main() {
         let shown = 0;
         let newlySaved = 0;
         for (const message of selectedMessages) {
-          if (captureMessage(message, selection.id)) newlySaved++;
+          const sender = await senderLabel(message);
+          if (captureMessage(message, selection.id, sender)) newlySaved++;
           shown++;
           const sentAt = new Date(message.timestamp * 1000).toISOString();
-          const sender = await senderLabel(message);
           console.log(`[${sentAt}] ${sender}: ${displayMessage(message)}`);
           await printMessageReactions(await readMessageReactions(message, selection.id));
           if (isPollMessage(message)) {
@@ -418,33 +526,69 @@ async function main() {
         }
         console.log(`Displayed ${shown} available message(s); saved ${newlySaved} new message(s).`);
       }
-      console.log(`Listening only to “${selection.name}”. Press Ctrl+C to stop.`);
+      if (appMode && selection) await cacheGroupHistory(selection);
+      if (selection) console.log(`Listening only to ${selection.name}.`);
+      else console.log('Connected. Select a group in the RKAVIC app to begin reading.');
+      emitAppEvent({ type: 'reader_ready', selectedGroup: selection?.id || null });
+      if (!appMode) {
+        try { fs.rmSync(selectionRequestPath, { force: true }); } catch (_) { /* No pending request. */ }
+      }
+      let switchingGroup = false;
+      const applySelectionRequest = async () => {
+        if (switchingGroup) return;
+        if (!fs.existsSync(selectionRequestPath)) return;
+        switchingGroup = true;
+        try {
+          const request = JSON.parse(fs.readFileSync(selectionRequestPath, 'utf8'));
+          const group = groups.find((candidate) => candidate.id._serialized === request.id);
+          if (!group || group.id._serialized === selection?.id) return;
+          selection = { id: group.id._serialized, name: group.name };
+          writeJsonAtomic(selectionPath, selection);
+          emitAppEvent({ type: 'group_selected', id: selection.id, name: selection.name });
+          console.log(`App selected group: ${selection.name}`);
+          await cacheGroupHistory(selection);
+        } catch (error) {
+          console.error(`Could not switch selected group: ${error.message || error}`);
+        } finally {
+          switchingGroup = false;
+        }
+      };
+      fs.watchFile(selectionRequestPath, { interval: 750 }, (current, previous) => {
+        if (current.mtimeMs === 0 || current.mtimeMs === previous.mtimeMs) return;
+        void applySelectionRequest();
+      });
+      if (appMode) void applySelectionRequest();
       client.on('message', async (message) => {
+        const activeSelection = selection;
         const chatId = message.fromMe ? message.to : message.from;
-        if (chatId !== selection.id) return;
-        if (captureMessage(message, selection.id)) {
+        if (!activeSelection || chatId !== activeSelection.id) return;
+        const sender = await senderLabel(message);
+        if (captureMessage(message, activeSelection.id, sender)) {
           const sentAt = new Date(message.timestamp * 1000).toISOString();
-          const sender = await senderLabel(message);
           console.log(`[${sentAt}] ${sender}: ${displayMessage(message)}`);
         }
       });
       client.on('vote_update', async (vote) => {
-        if (captureVote(vote, selection.id)) {
+        const activeSelection = selection;
+        if (!activeSelection) return;
+        const name = vote.voter ? await voterLabel(vote.voter) : null;
+        if (captureVote(vote, activeSelection.id, name)) {
           const choices = (vote.selectedOptions || []).map((option) => option.name).join(', ') || '(no options selected)';
-          const name = await voterLabel(vote.voter);
-          console.log(`[${new Date(vote.interractedAtTs || Date.now()).toISOString()}] Poll vote by ${name}: ${choices}`);
+          console.log(`[${new Date(vote.interractedAtTs || Date.now()).toISOString()}] Poll vote by ${name || 'Unknown participant'}: ${choices}`);
         }
       });
       client.on('message_reaction', async (reaction) => {
+        const activeSelection = selection;
+        if (!activeSelection) return;
         const parentKey = reaction.msgId;
         const messageId = normalizedId(parentKey);
         const remote = normalizedId(parentKey?.remote) || parentKey?.remote;
-        if (!messageId || remote !== selection.id) return;
+        if (!messageId || remote !== activeSelection.id) return;
         const senderId = reaction.senderId || normalizedId(parentKey?.participant) || parentKey?.participant;
-        if (!captureReaction(messageId, selection.id, senderId, reaction.reaction, reaction.timestamp)) return;
         const who = client.info?.wid?._serialized === senderId || client.info?.wid?.$1 === senderId
           ? 'you'
           : await voterLabel(senderId);
+        if (!captureReaction(messageId, activeSelection.id, senderId, reaction.reaction, reaction.timestamp, who)) return;
         let target = `message ${messageId}`;
         try {
           const parentMessage = await client.getMessageById(messageId);
@@ -459,11 +603,12 @@ async function main() {
           console.log(`Reaction removed: ${who} from ${target}`);
         }
       });
-      await sendLoop(selection);
+      if (!appMode) await sendLoop(() => selection);
     } catch (error) {
       console.error(`Could not load groups: ${error.message}`);
     }
   });
+  emitAppEvent({ type: 'reader_starting' });
   await client.initialize();
 }
 

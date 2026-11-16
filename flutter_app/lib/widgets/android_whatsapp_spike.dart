@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../data/whatsapp_message_reader.dart';
 import '../data/whatsapp_message_reader_factory.dart';
@@ -17,16 +18,22 @@ class WhatsAppReaderCard extends StatefulWidget {
 
 class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
   final _groupSearch = TextEditingController();
+  final _pollPhone = TextEditingController();
   late final WhatsAppMessageReader _reader;
   late final StreamSubscription<Map<String, dynamic>> _subscription;
   final _log = <String>[];
   final _readerItems = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _groups = [];
   String? _selectedGroup;
+  String? _pairingResult;
+  bool _pollReaderStarted = false;
   String? _readerEmptyMessage;
   String _status = 'Checking notification access';
   bool _notificationAccess = false;
+  bool _captureConsent = false;
   bool _busy = false;
+  bool _windowsReaderStarted = false;
+  String? _pairingQr;
   bool get _isAndroid => Platform.isAndroid;
 
   List<Map<String, dynamic>> get _visibleGroups {
@@ -47,26 +54,35 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
       _onEvent,
       onError: (Object error) => _append('Reader event error: $error'),
     );
-    if (_isAndroid) _refreshNotificationAccess();
+    if (_isAndroid) {
+      _refreshNotificationAccess();
+    } else {
+      _loadGroups();
+    }
   }
 
   @override
   void dispose() {
     _subscription.cancel();
     _groupSearch.dispose();
+    _pollPhone.dispose();
     super.dispose();
   }
 
   Future<void> _refreshNotificationAccess() async {
     try {
-      final enabled = await (_reader as WhatsAppReaderAuthorization)
-          .hasNotificationAccess();
+      final authorization = _reader as WhatsAppReaderAuthorization;
+      final enabled = await authorization.hasNotificationAccess();
+      final consent = await authorization.hasCaptureConsent();
       if (!mounted) return;
       setState(() {
         _notificationAccess = enabled;
-        _status = enabled
-            ? 'Capturing WhatsApp notifications'
-            : 'Access required';
+        _captureConsent = consent;
+        _status = !enabled
+            ? 'Access required'
+            : consent
+            ? 'Capturing selected group notifications'
+            : 'Choose a group, then start capture';
       });
     } on PlatformException catch (error) {
       _append(error.message ?? error.code);
@@ -83,13 +99,77 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
 
   void _onEvent(Map<String, dynamic> event) {
     final type = event['type'];
+    if (type == 'pairing_qr') {
+      setState(() {
+        _pairingQr = event['qr'] as String?;
+        _status = 'Scan the QR code with WhatsApp Linked devices';
+      });
+      return;
+    }
+    if (type == 'groups_loaded') {
+      _append('WhatsApp returned ${event['count']} joined group(s).');
+      _loadGroupsInternal();
+      return;
+    }
+    if (type == 'reader_starting') {
+      setState(() => _status = 'Starting WhatsApp connection…');
+      return;
+    }
+    if (type == 'authenticated') {
+      setState(() => _status = 'WhatsApp linked; loading groups…');
+      return;
+    }
+    if (type == 'reader_ready') {
+      setState(() {
+        _pairingQr = null;
+        _status = 'WhatsApp reader connected';
+      });
+      return;
+    }
+    if (type == 'group_selected') {
+      setState(() {
+        _selectedGroup = event['id'] as String?;
+        _readerItems.clear();
+        _readerEmptyMessage = null;
+        _status = 'Reading ${event['name']}';
+      });
+      _append('Reader switched to ${event['name']}.');
+      return;
+    }
+    if (type == 'companion_log' || type == 'companion_error') {
+      final line = event['text']?.toString() ?? '';
+      if (line.isNotEmpty) _append(line);
+      return;
+    }
+    if (type == 'auth_failure' || type == 'disconnected') {
+      setState(
+        () => _status =
+            'WhatsApp disconnected: ${event['reason'] ?? event['message'] ?? 'authentication failed'}',
+      );
+      _append(const JsonEncoder.withIndent('  ').convert(event));
+      return;
+    }
+    if (type == 'companion_exit') {
+      setState(() {
+        _windowsReaderStarted = false;
+        _status = 'WhatsApp reader stopped (exit ${event['code']})';
+      });
+      return;
+    }
+    if (type == 'connected') {
+      _append('Linked-device session connected; loading all joined groups.');
+      if (_isAndroid && _pollReaderStarted) _run(_loadGroupsInternal);
+      return;
+    }
     if (type == 'reader_access') {
       final enabled = event['enabled'] == true;
       setState(() {
         _notificationAccess = enabled;
-        _status = enabled
-            ? 'Capturing WhatsApp notifications'
-            : 'Access required';
+        _status = !enabled
+            ? 'Access required'
+            : _captureConsent
+            ? 'Capturing selected group notifications'
+            : 'Choose a group, then start capture';
       });
       if (enabled) _append('WhatsApp notification access enabled.');
       return;
@@ -148,19 +228,82 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
   }
 
   Future<void> _start() => _run(() async {
+    if (!_isAndroid) {
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Start WhatsApp group reader?'),
+          content: const Text(
+            'The app will start its WhatsApp connection, show the pairing QR here if needed, and store selected-group messages and polls on this PC for 30 days. Confirm that group members have been informed about capture.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Members informed; start reader'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || accepted != true) return;
+      await _reader.start();
+      setState(() {
+        _windowsReaderStarted = true;
+        _pairingQr = null;
+        _status = 'Starting WhatsApp reader…';
+      });
+      return;
+    }
+    final authorization = _reader as WhatsAppReaderAuthorization;
+    final accessEnabled = await authorization.hasNotificationAccess();
+    if (!accessEnabled) {
+      await _reader.start();
+      setState(() {
+        _notificationAccess = false;
+        _status = 'Enable access in Android Settings';
+      });
+      return;
+    }
+    if (_selectedGroup == null) {
+      setState(() => _status = 'Select a group before starting capture');
+      _append(
+        'Select one group first; other groups will not have message text saved.',
+      );
+      return;
+    }
+    if (!await authorization.hasCaptureConsent()) {
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Start WhatsApp group capture?'),
+          content: Text(
+            'The app will save readable notification text only for "${_groups.firstWhere((group) => group['id'] == _selectedGroup)['name']}" on this device for up to 30 days. Other groups are used only to show their names for selection. No media is saved or uploaded. Confirm that this group has been informed about capture.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Group is informed; start'),
+            ),
+          ],
+        ),
+      );
+      if (accepted != true) return;
+      await authorization.setCaptureConsent(true);
+    }
     await _reader.start();
-    final enabled = _isAndroid
-        ? await (_reader as WhatsAppReaderAuthorization).hasNotificationAccess()
-        : false;
     setState(() {
-      _notificationAccess = enabled;
-      _status = _isAndroid
-          ? enabled
-                ? 'Capturing WhatsApp notifications'
-                : 'Enable access in Android Settings'
-          : 'Windows cache ready';
+      _notificationAccess = true;
+      _captureConsent = true;
+      _status = 'Capturing selected group notifications';
     });
-    if (enabled) await _loadGroupsInternal();
+    await _loadGroupsInternal();
   });
 
   Future<void> _openNotificationSettings() => _run(() async {
@@ -177,26 +320,76 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
           ? 'Access required'
           : _groups.isEmpty
           ? _isAndroid
-                ? 'Waiting for WhatsApp messages'
-                : 'No saved group'
-          : '${_groups.length} group(s) with captured messages';
+                ? _pollReaderStarted
+                      ? 'No linked groups loaded. Pair the account or refresh.'
+                      : 'Connect the linked-device reader to load all WhatsApp groups.'
+                : 'Start the reader to load your WhatsApp groups'
+          : (!_isAndroid || _pollReaderStarted)
+          ? '${_groups.length} WhatsApp group(s) available'
+          : '${_groups.length} notification-observed group(s)';
       if (!_groups.any((group) => group['id'] == _selectedGroup)) {
-        _selectedGroup = null;
+        _selectedGroup = _groups
+            .where((group) => group['selected'] == true)
+            .map((group) => group['id'] as String)
+            .firstOrNull;
       }
     });
   }
 
   Future<void> _loadGroups() => _run(_loadGroupsInternal);
 
+  Future<void> _startPollReader() => _run(() async {
+    final pollReader = _reader as WhatsAppStructuredPollReader;
+    await pollReader.startPollReader();
+    setState(() => _pollReaderStarted = true);
+    await _loadGroupsInternal();
+    if (_groups.isEmpty && _pollPhone.text.trim().isNotEmpty) {
+      final response = await pollReader.pairPollReader(_pollPhone.text.trim());
+      setState(() => _pairingResult = response);
+      await _loadGroupsInternal();
+    } else if (_groups.isEmpty) {
+      setState(() {
+        _pairingResult = 'No WhatsApp account is linked to this app yet. Enter the account phone number with country code, then tap Connect poll reader to pair it.';
+      });
+    }
+  });
+
+  Future<void> _stopCapture() => _run(() async {
+    await _reader.stop();
+    setState(() {
+      _captureConsent = false;
+      _readerItems.clear();
+      _readerEmptyMessage = null;
+      _status = 'Capture stopped; local messages cleared';
+    });
+    _append('Capture stopped and cached message text erased.');
+  });
+
+  Future<void> _stopWindowsReader() => _run(() async {
+    await _reader.stop();
+    setState(() {
+      _windowsReaderStarted = false;
+      _pairingQr = null;
+      _status = 'WhatsApp reader stopped';
+    });
+  });
+
   Future<void> _selectGroup(String? groupId) async {
     if (groupId == null) return;
     await _run(() async {
       await _reader.selectGroup(groupId);
+      final consent = _isAndroid
+          ? await (_reader as WhatsAppReaderAuthorization).hasCaptureConsent()
+          : false;
       setState(() {
         _selectedGroup = groupId;
+        _captureConsent = consent;
         _groupSearch.clear();
         _readerItems.clear();
         _readerEmptyMessage = null;
+        if (_isAndroid && !consent) {
+          _status = 'Selected group; start capture to confirm notice';
+        }
       });
       _append(
         'Selected group ${_groups.firstWhere((g) => g['id'] == groupId)['name']}',
@@ -237,8 +430,8 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
           const SizedBox(height: 8),
           Text(
             _isAndroid
-                ? 'Reads message text from WhatsApp notifications on this device. Enable notification previews in WhatsApp. Android does not expose old chat history or complete poll voter details to other apps.'
-                : 'Run companion/start-companion.cmd on this PC. This screen reads messages fetched by the Windows companion.',
+                ? 'Notification capture only discovers groups after a readable notification arrives. Connect the linked-device reader below to load your full joined-group list and read structured polls.'
+                : 'Start the WhatsApp reader here. The app manages the connection and lists all groups available to the linked account.',
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -257,25 +450,110 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
               if (_isAndroid)
                 OutlinedButton(
                   onPressed: _busy ? null : _start,
-                  child: const Text('Start reader'),
+                  child: const Text('Start capture'),
+                ),
+              if (_isAndroid && _captureConsent)
+                TextButton(
+                  onPressed: _busy ? null : _stopCapture,
+                  child: const Text('Stop and clear messages'),
                 ),
               OutlinedButton(
                 onPressed: _busy ? null : _loadGroups,
                 child: Text(
-                  _isAndroid ? 'Refresh captured groups' : 'Refresh group',
+                  _isAndroid
+                      ? (_pollReaderStarted
+                            ? 'Refresh WhatsApp groups'
+                            : 'Refresh observed groups')
+                      : 'Refresh groups',
                 ),
               ),
+              if (!_isAndroid)
+                FilledButton.icon(
+                  onPressed: _busy || _windowsReaderStarted ? null : _start,
+                  icon: const Icon(Icons.play_arrow),
+                  label: Text(
+                    _windowsReaderStarted
+                        ? 'Reader running'
+                        : 'Start WhatsApp reader',
+                  ),
+                ),
+              if (!_isAndroid && _windowsReaderStarted)
+                TextButton(
+                  onPressed: _busy ? null : _stopWindowsReader,
+                  child: const Text('Stop reader'),
+                ),
             ],
           ),
+          if (_pairingQr != null) ...[
+            const SizedBox(height: 16),
+            const Text(
+              'On your phone, open WhatsApp → Linked devices → Link a device.',
+            ),
+            Center(
+              child: Container(
+                color: Colors.white,
+                padding: const EdgeInsets.all(12),
+                child: QrImageView(data: _pairingQr!, size: 240),
+              ),
+            ),
+          ],
+          if (_isAndroid) ...[
+            const SizedBox(height: 18),
+            const Divider(),
+            const Text(
+              'Structured polls and voter names',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'This uses a separate WhatsApp linked-device session. It receives structured poll votes and works with the attendance poll linker. In WhatsApp, open Linked devices to link this app.',
+            ),
+            TextField(
+              controller: _pollPhone,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(
+                labelText: 'WhatsApp phone number with country code',
+                hintText: '31612345678',
+              ),
+            ),
+            Wrap(
+              spacing: 8,
+              children: [
+                FilledButton.tonal(
+                  onPressed: _busy ? null : _startPollReader,
+                  child: Text(
+                    _pollReaderStarted
+                        ? 'Reconnect poll reader'
+                        : 'Connect poll reader',
+                  ),
+                ),
+                if (_pollReaderStarted)
+                  OutlinedButton(
+                    onPressed: _busy ? null : _loadGroups,
+                    child: const Text('Refresh WhatsApp groups'),
+                  ),
+              ],
+            ),
+            if (_pairingResult != null)
+              SelectableText(
+                _pairingResult!.length == 8
+                    ? 'Pairing code: $_pairingResult\nOn the WhatsApp account, open Linked devices → Link a device → Link with phone number and enter this code.'
+                    : _pairingResult!,
+              ),
+          ],
           if (_groups.isEmpty && _isAndroid && _notificationAccess) ...[
             const SizedBox(height: 12),
             const Text(
-              'New groups appear here after WhatsApp posts a readable message notification.',
+              'This is not the full WhatsApp list. Groups appear here only after a readable notification; connect the linked-device reader above to choose any joined group.',
             ),
           ],
           if (_groups.isNotEmpty) ...[
             const SizedBox(height: 14),
-            const Text('Select a group to view captured messages:'),
+            Text(
+              _isAndroid && !_pollReaderStarted
+                  ? 'Notification-observed groups (incomplete list):'
+                  : 'Select a WhatsApp group to read:',
+            ),
             TextField(
               controller: _groupSearch,
               decoration: const InputDecoration(
@@ -327,7 +605,7 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
                       ? null
                       : () => _readHistory('today'),
                   child: Text(
-                    _isAndroid
+                    _isAndroid && !_pollReaderStarted
                         ? "Read today's captured messages"
                         : "Read today's messages and polls",
                   ),
@@ -337,7 +615,7 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
                       ? null
                       : () => _readHistory('latest'),
                   child: Text(
-                    _isAndroid
+                    _isAndroid && !_pollReaderStarted
                         ? 'Read latest captured message'
                         : 'Read latest + poll votes',
                   ),
