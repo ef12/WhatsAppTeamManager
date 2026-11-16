@@ -215,6 +215,9 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
   final Map<String, String> _savedDrafts = {};
   File? _savedDraftsFile;
   StreamSubscription<Map<String, dynamic>>? _pollSubscription;
+  bool _automaticReaderStarted = false;
+  bool _startingAutomaticReader = false;
+  Timer? _readerRestartTimer;
 
   @override
   void initState() {
@@ -232,17 +235,28 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     }
     _loadSavedDrafts();
     refresh();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _ensureAutomaticAttendance();
+    });
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       widget.syncService?.onAppResumed();
+      _ensureAutomaticAttendance();
     }
   }
 
   void _onSyncServiceChanged() {
     final service = widget.syncService;
+    if (service?.isTeamOwner == true) {
+      _ensureAutomaticAttendance();
+    } else if (_automaticReaderStarted) {
+      _automaticReaderStarted = false;
+      _readerRestartTimer?.cancel();
+      unawaited(createWhatsAppMessageReader().stop());
+    }
     if (service == null || service.dataGeneration == _seenCloudDataGeneration) {
       return;
     }
@@ -251,6 +265,15 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
   }
 
   Future<void> _onWhatsAppEvent(Map<String, dynamic> event) async {
+    if (event['type'] == 'companion_exit' || event['type'] == 'disconnected') {
+      _automaticReaderStarted = false;
+      _readerRestartTimer?.cancel();
+      _readerRestartTimer = Timer(
+        const Duration(seconds: 8),
+        _ensureAutomaticAttendance,
+      );
+      return;
+    }
     if (widget.syncService?.isTeamOwner != true) return;
     try {
       final message = event['message'];
@@ -270,6 +293,40 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
       }
     } catch (error) {
       debugPrint('Could not apply WhatsApp poll attendance: $error');
+    }
+  }
+
+  Future<void> _ensureAutomaticAttendance() async {
+    if (!mounted ||
+        !Platform.isWindows ||
+        widget.syncService?.isTeamOwner != true ||
+        widget.syncService?.phase == TeamSyncPhase.syncing ||
+        _automaticReaderStarted ||
+        _startingAutomaticReader) {
+      return;
+    }
+    _startingAutomaticReader = true;
+    try {
+      if (!await widget.store.hasLinkedAttendancePoll()) return;
+      final reader = createWhatsAppMessageReader();
+      final polls = await reader.availablePolls();
+      var changed = 0;
+      for (final poll in polls) {
+        changed += await widget.store.applyAttendancePoll(poll);
+      }
+      if (changed > 0 && mounted) setState(() {});
+      _automaticReaderStarted = true;
+      await reader.start();
+    } catch (error) {
+      _automaticReaderStarted = false;
+      debugPrint('Could not start automatic attendance reader: $error');
+      _readerRestartTimer?.cancel();
+      _readerRestartTimer = Timer(
+        const Duration(seconds: 30),
+        _ensureAutomaticAttendance,
+      );
+    } finally {
+      _startingAutomaticReader = false;
     }
   }
 
@@ -308,6 +365,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _readerRestartTimer?.cancel();
     _pollSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     widget.syncService?.removeListener(_onSyncServiceChanged);
@@ -2499,6 +2557,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
               match: match,
               onAttendanceChanged: () {
                 if (mounted) setState(() {});
+                _ensureAutomaticAttendance();
               },
             ),
           ],

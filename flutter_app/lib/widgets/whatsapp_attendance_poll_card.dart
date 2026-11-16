@@ -151,9 +151,15 @@ class _WhatsAppAttendancePollCardState
           linkedAt: DateTime.now().toUtc(),
         ),
       );
+      final changed = await widget.store.applyAttendancePoll(poll);
       await _refreshLink();
-      if (mounted)
-        setState(() => _status = 'Attendance poll linked on this device.');
+      if (mounted) {
+        setState(
+          () => _status =
+              'Attendance poll linked. Automatically updated $changed player(s) from current votes. New votes will update attendance while the reader is connected.',
+        );
+        widget.onAttendanceChanged();
+      }
     } catch (error) {
       if (mounted) setState(() => _status = 'Could not link poll: $error');
     }
@@ -211,12 +217,22 @@ class _WhatsAppAttendancePollCardState
       final players = await widget.store.players();
       final options = await widget.store.pollOptionMappings(link.matchId);
       final mappings = await widget.store.pollPlayerMappings(link.groupId);
+      for (final option in poll.options) {
+        final inferred = inferredPollStatus(option);
+        if (inferred != null) options.putIfAbsent(option, () => inferred);
+      }
+      for (final vote in poll.votes.where((vote) => vote.voterId.isNotEmpty)) {
+        mappings.putIfAbsent(
+          vote.voterId,
+          () => inferredVoterPlayers(vote.voter, players),
+        );
+      }
       if (!mounted) return;
       final saved = await showDialog<bool>(
         context: context,
         builder: (context) => StatefulBuilder(
           builder: (context, update) => AlertDialog(
-            title: const Text('Set up attendance from poll'),
+            title: const Text('Review automatic attendance matches'),
             content: SizedBox(
               width: 560,
               child: SingleChildScrollView(
@@ -224,7 +240,9 @@ class _WhatsAppAttendancePollCardState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('Choose the attendance status for each answer:'),
+                    const Text(
+                      'The app selected clear answers and roster matches. Change any suggestion here:',
+                    ),
                     if (poll.allowMultipleAnswers == true)
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8),
@@ -247,7 +265,7 @@ class _WhatsAppAttendancePollCardState
                       ),
                     ),
                     const SizedBox(height: 16),
-                    const Text('Select the players represented by each voter:'),
+                    const Text('Players represented by each voter:'),
                     if (poll.votes.isEmpty)
                       const Text(
                         'No voters are available yet. Return here after a vote is received.',
@@ -341,7 +359,8 @@ class _WhatsAppAttendancePollCardState
     if (!mounted) return;
     if (poll == null || poll.allowMultipleAnswers == null) {
       setState(
-        () => _status = 'The linked poll is unavailable or its selection mode is unknown.',
+        () => _status =
+            'The linked poll is unavailable or its selection mode is unknown.',
       );
       return;
     }
@@ -401,6 +420,10 @@ class _WhatsAppAttendancePollCardState
               const SizedBox(height: 4),
               Text('Choices: ${_link!.options.join(' · ')}'),
               Text('Linked ${_link!.linkedAt.toLocal()}'),
+              const SizedBox(height: 4),
+              const Text(
+                'Clear answers and voter names are matched to the roster automatically. Use Review vote matches only for voters the app cannot identify.',
+              ),
             ],
             const SizedBox(height: 8),
             Wrap(
@@ -419,7 +442,7 @@ class _WhatsAppAttendancePollCardState
                 if (_link != null)
                   FilledButton.tonal(
                     onPressed: _configureAttendance,
-                    child: const Text('Map answers and voters'),
+                    child: const Text('Review vote matches'),
                   ),
                 if (_link != null)
                   TextButton(

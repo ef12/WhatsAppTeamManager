@@ -22,6 +22,89 @@ class Player {
       Player(row['id'] as int, row['name'] as String, row['parent'] as String);
 }
 
+List<String> _nameTokens(String value) => RegExp(
+  r'[\p{L}\p{N}]+',
+  unicode: true,
+).allMatches(value.toLowerCase()).map((match) => match.group(0)!).toList();
+
+String _nameKey(String value) => _nameTokens(value).join(' ');
+
+String _unorderedNameKey(String value) {
+  final tokens = _nameTokens(value)..sort();
+  return tokens.join(' ');
+}
+
+/// Returns a status only when the answer starts with an unambiguous response.
+int? inferredPollStatus(String answer) {
+  final words = _nameTokens(answer);
+  if (words.isEmpty) return null;
+  switch (words.first) {
+    case 'yes':
+    case 'ja':
+    case 'present':
+    case 'coming':
+    case 'aanwezig':
+      return 1;
+    case 'no':
+    case 'nee':
+    case 'absent':
+    case 'afwezig':
+      return 2;
+    case 'maybe':
+    case 'perhaps':
+    case 'misschien':
+      return 3;
+  }
+  return null;
+}
+
+/// Matches a voter to one roster family, including all children of one parent.
+/// A surname is used only if it identifies one family in the roster.
+Set<int> inferredVoterPlayers(String voterName, List<Player> roster) {
+  final tokens = _nameTokens(voterName);
+  if (tokens.length < 2 ||
+      voterName.contains('@') ||
+      tokens.every((token) => RegExp(r'^\d+$').hasMatch(token)) ||
+      _nameKey(voterName) == 'unknown participant') {
+    return <int>{};
+  }
+  Set<int> oneFamily(Iterable<Player> candidates) {
+    final found = candidates.toList();
+    if (found.isEmpty) return <int>{};
+    final families = found
+        .map(
+          (player) => _nameKey(player.parent).isEmpty
+              ? 'player:${player.id}'
+              : _nameKey(player.parent),
+        )
+        .toSet();
+    return families.length == 1
+        ? {for (final player in found) player.id}
+        : <int>{};
+  }
+
+  final name = _nameKey(voterName);
+  final unordered = _unorderedNameKey(voterName);
+  final stages = <Iterable<Player>>[
+    roster.where((player) => _nameKey(player.parent) == name),
+    roster.where((player) => _nameKey(player.name) == name),
+    roster.where((player) => _unorderedNameKey(player.parent) == unordered),
+    roster.where((player) => _unorderedNameKey(player.name) == unordered),
+    roster.where((player) {
+      final playerWords = _nameTokens(player.name);
+      final parentWords = _nameTokens(player.parent);
+      final surname = tokens.last;
+      return (playerWords.isNotEmpty && playerWords.last == surname) ||
+          (parentWords.isNotEmpty && parentWords.last == surname);
+    }),
+  ];
+  for (final candidates in stages) {
+    final found = candidates.toList();
+    if (found.isNotEmpty) return oneFamily(found);
+  }
+  return <int>{};
+}
+
 class TeamMatch {
   const TeamMatch(
     this.id,
@@ -217,6 +300,7 @@ class TeamStore {
   TeamStore._(this._db);
 
   final Database _db;
+  static const _ignoredVoterPlayerId = 0;
   static final Random _idRandom = Random.secure();
   static int _newId() =>
       ((_idRandom.nextInt(1 << 26) << 26) | _idRandom.nextInt(1 << 26)) + 1;
@@ -805,6 +889,12 @@ class TeamStore {
     return rows.isEmpty ? null : rows.single['match_id'] as int;
   }
 
+  Future<bool> hasLinkedAttendancePoll() async => (await _db.query(
+    'whatsapp_attendance_polls',
+    columns: ['match_id'],
+    limit: 1,
+  )).isNotEmpty;
+
   /// Poll links stay local so raw WhatsApp group/poll identifiers and text are
   /// not included in the shared team backup or Supabase sync payload.
   Future<void> linkAttendancePoll(AttendancePollLink link) async {
@@ -897,9 +987,12 @@ class TeamStore {
     );
     final mappings = <String, Set<int>>{};
     for (final row in rows) {
-      mappings
-          .putIfAbsent(row['voter_id'] as String, () => <int>{})
-          .add(row['player_id'] as int);
+      final players = mappings.putIfAbsent(
+        row['voter_id'] as String,
+        () => <int>{},
+      );
+      final playerId = row['player_id'] as int;
+      if (playerId != _ignoredVoterPlayerId) players.add(playerId);
     }
     return mappings;
   }
@@ -909,12 +1002,58 @@ class TeamStore {
     String voterId,
     Set<int> playerIds,
   ) => _db.transaction((txn) async {
+    final previousMappings = await txn.query(
+      'whatsapp_player_mappings',
+      columns: ['player_id'],
+      where: 'group_id=? AND voter_id=?',
+      whereArgs: [groupId, voterId],
+    );
+    final previousIds = previousMappings
+        .map((row) => row['player_id'] as int)
+        .where((id) => id != _ignoredVoterPlayerId)
+        .toSet();
+    if (previousMappings.isNotEmpty &&
+        previousIds.length == playerIds.length &&
+        previousIds.containsAll(playerIds)) {
+      return;
+    }
+    final oldStates = await txn.rawQuery(
+      'SELECT s.match_id,s.player_id,s.last_status FROM whatsapp_attendance_state s '
+      'JOIN whatsapp_attendance_polls p ON p.match_id=s.match_id '
+      'WHERE p.group_id=? AND s.voter_id=? AND s.manual_override=0',
+      [groupId, voterId],
+    );
+    for (final state in oldStates) {
+      final matchId = state['match_id'] as int;
+      final playerId = state['player_id'] as int;
+      final current = await txn.query(
+        'attendance',
+        columns: ['status'],
+        where: 'match_id=? AND player_id=?',
+        whereArgs: [matchId, playerId],
+        limit: 1,
+      );
+      final status = current.isEmpty ? 0 : current.single['status'] as int;
+      if (status == state['last_status']) {
+        await txn.delete(
+          'attendance',
+          where: 'match_id=? AND player_id=?',
+          whereArgs: [matchId, playerId],
+        );
+      }
+      await txn.delete(
+        'whatsapp_attendance_state',
+        where: 'match_id=? AND player_id=?',
+        whereArgs: [matchId, playerId],
+      );
+    }
     await txn.delete(
       'whatsapp_player_mappings',
       where: 'group_id=? AND voter_id=?',
       whereArgs: [groupId, voterId],
     );
-    for (final playerId in playerIds) {
+    for (final playerId
+        in playerIds.isEmpty ? {_ignoredVoterPlayerId} : playerIds) {
       await txn.insert('whatsapp_player_mappings', {
         'group_id': groupId,
         'voter_id': voterId,
@@ -936,7 +1075,7 @@ class TeamStore {
     );
   }
 
-  /// Applies only an explicitly configured poll and verified voter mappings.
+  /// Applies a linked poll using explicit mappings or unambiguous roster matches.
   Future<int> applyAttendancePoll(
     WhatsAppPollSnapshot poll,
   ) => _db.transaction((txn) async {
@@ -965,15 +1104,26 @@ class TeamStore {
       for (final row in optionRows)
         row['option_name'] as String: row['status'] as int,
     };
-    if (poll.options.isEmpty ||
-        options.length != poll.options.length ||
-        poll.options.any((option) => !options.containsKey(option)))
-      return 0;
+    if (poll.options.isEmpty) return 0;
+    for (final option in poll.options) {
+      final inferred = inferredPollStatus(option);
+      if (inferred != null) options.putIfAbsent(option, () => inferred);
+    }
     final mappings = await txn.query(
       'whatsapp_player_mappings',
       where: 'group_id=?',
       whereArgs: [poll.groupId],
     );
+    final roster = (await txn.query('players')).map(Player.fromRow).toList();
+    final mappedVoters = <String, Set<int>>{};
+    for (final mapping in mappings) {
+      final players = mappedVoters.putIfAbsent(
+        mapping['voter_id'] as String,
+        () => <int>{},
+      );
+      final playerId = mapping['player_id'] as int;
+      if (playerId != _ignoredVoterPlayerId) players.add(playerId);
+    }
     final players = <int, List<WhatsAppPollVote>>{};
     for (final vote in poll.votes) {
       if (vote.voterId.isEmpty ||
@@ -982,10 +1132,11 @@ class TeamStore {
           (vote.options.isNotEmpty &&
               !options.containsKey(vote.options.single)))
         continue;
-      for (final mapping in mappings.where(
-        (row) => row['voter_id'] == vote.voterId,
-      )) {
-        players.putIfAbsent(mapping['player_id'] as int, () => []).add(vote);
+      final playerIds =
+          mappedVoters[vote.voterId] ??
+          inferredVoterPlayers(vote.voter, roster);
+      for (final playerId in playerIds) {
+        players.putIfAbsent(playerId, () => []).add(vote);
       }
     }
     var changed = 0;
@@ -1021,6 +1172,14 @@ class TeamStore {
         whereArgs: [matchId, entry.key],
         limit: 1,
       );
+      if (state.isEmpty && existing.isNotEmpty) {
+        await txn.insert('whatsapp_attendance_state', {
+          'match_id': matchId,
+          'player_id': entry.key,
+          'manual_override': 1,
+        });
+        continue;
+      }
       final oldStatus = existing.isEmpty ? 0 : existing.single['status'] as int;
       final newStatus = vote.options.isEmpty
           ? 0
