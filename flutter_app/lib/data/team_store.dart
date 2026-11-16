@@ -9,6 +9,7 @@ import 'package:sqflite_common/sqlite_api.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as desktop;
 
 import 'team_backup.dart';
+import 'whatsapp_message_reader.dart';
 
 class Player {
   const Player(this.id, this.name, this.parent);
@@ -244,7 +245,7 @@ class TeamStore {
     final db = await factory.openDatabase(
       dbPath,
       options: OpenDatabaseOptions(
-        version: 8,
+        version: 9,
         onCreate: (db, version) async {
           await db.execute(
             'CREATE TABLE players(id INTEGER PRIMARY KEY,name TEXT NOT NULL,'
@@ -276,6 +277,7 @@ class TeamStore {
             'CREATE TABLE parent_duty_exemptions(parent_name TEXT PRIMARY KEY)',
           );
           await _createWhatsAppPollLinks(db);
+          await _createWhatsAppAttendance(db);
           await _createSyncTracking(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
@@ -378,6 +380,7 @@ class TeamStore {
             );
           }
           if (oldVersion < 8) await _createWhatsAppPollLinks(db);
+          if (oldVersion < 9) await _createWhatsAppAttendance(db);
         },
       ),
     );
@@ -540,6 +543,31 @@ class TeamStore {
     );
   }
 
+  static Future<void> _createWhatsAppAttendance(DatabaseExecutor db) async {
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS whatsapp_poll_options('
+      'match_id INTEGER NOT NULL, option_name TEXT NOT NULL, status INTEGER NOT NULL, '
+      'PRIMARY KEY(match_id, option_name))',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS whatsapp_player_mappings('
+      'group_id TEXT NOT NULL, voter_id TEXT NOT NULL, player_id INTEGER NOT NULL, '
+      'PRIMARY KEY(group_id, voter_id, player_id))',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS whatsapp_attendance_state('
+      'match_id INTEGER NOT NULL, player_id INTEGER NOT NULL, manual_override INTEGER NOT NULL DEFAULT 0, '
+      'poll_id TEXT, voter_id TEXT, vote_at TEXT, last_status INTEGER, '
+      'PRIMARY KEY(match_id, player_id))',
+    );
+    await db.execute(
+      'CREATE TABLE IF NOT EXISTS whatsapp_attendance_audit('
+      'id INTEGER PRIMARY KEY AUTOINCREMENT, match_id INTEGER NOT NULL, player_id INTEGER NOT NULL, '
+      'poll_id TEXT NOT NULL, voter_id TEXT NOT NULL, old_status INTEGER NOT NULL, '
+      'new_status INTEGER NOT NULL, vote_at TEXT NOT NULL)',
+    );
+  }
+
   Future<TeamBackup> exportBackup() => _db.transaction(
     (txn) async => TeamBackup.capture(
       players: await txn.query('players', orderBy: 'id'),
@@ -625,6 +653,16 @@ class TeamStore {
         : (playerRows.first['parent'] as String).trim();
     await txn.delete('players', where: 'id=?', whereArgs: [id]);
     await txn.delete('attendance', where: 'player_id=?', whereArgs: [id]);
+    await txn.delete(
+      'whatsapp_player_mappings',
+      where: 'player_id=?',
+      whereArgs: [id],
+    );
+    await txn.delete(
+      'whatsapp_attendance_state',
+      where: 'player_id=?',
+      whereArgs: [id],
+    );
     await txn.rawUpdate('UPDATE duties SET player_id=NULL WHERE player_id=?', [
       id,
     ]);
@@ -774,21 +812,256 @@ class TeamStore {
     if (linkedMatch != null && linkedMatch != link.matchId) {
       throw StateError('This poll is already linked to another match.');
     }
-    await _db.insert('whatsapp_attendance_polls', {
-      'match_id': link.matchId,
-      'group_id': link.groupId,
-      'poll_id': link.pollId,
-      'question': link.question,
-      'options_json': jsonEncode(link.options),
-      'linked_at': link.linkedAt.toUtc().toIso8601String(),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.transaction((txn) async {
+      final old = await txn.query(
+        'whatsapp_attendance_polls',
+        where: 'match_id=?',
+        whereArgs: [link.matchId],
+        limit: 1,
+      );
+      if (old.isNotEmpty &&
+          (old.single['poll_id'] != link.pollId ||
+              old.single['group_id'] != link.groupId)) {
+        await txn.delete(
+          'whatsapp_poll_options',
+          where: 'match_id=?',
+          whereArgs: [link.matchId],
+        );
+      }
+      await txn.insert('whatsapp_attendance_polls', {
+        'match_id': link.matchId,
+        'group_id': link.groupId,
+        'poll_id': link.pollId,
+        'question': link.question,
+        'options_json': jsonEncode(link.options),
+        'linked_at': link.linkedAt.toUtc().toIso8601String(),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 
-  Future<void> unlinkAttendancePoll(int matchId) => _db.delete(
-    'whatsapp_attendance_polls',
-    where: 'match_id=?',
-    whereArgs: [matchId],
-  );
+  Future<void> unlinkAttendancePoll(int matchId) =>
+      _db.transaction((txn) async {
+        await txn.delete(
+          'whatsapp_attendance_polls',
+          where: 'match_id=?',
+          whereArgs: [matchId],
+        );
+        await txn.delete(
+          'whatsapp_poll_options',
+          where: 'match_id=?',
+          whereArgs: [matchId],
+        );
+      });
+
+  Future<Map<String, int>> pollOptionMappings(int matchId) async {
+    final rows = await _db.query(
+      'whatsapp_poll_options',
+      where: 'match_id=?',
+      whereArgs: [matchId],
+    );
+    return {
+      for (final row in rows)
+        row['option_name'] as String: row['status'] as int,
+    };
+  }
+
+  Future<void> savePollOptionMappings(int matchId, Map<String, int> options) =>
+      _db.transaction((txn) async {
+        await txn.delete(
+          'whatsapp_poll_options',
+          where: 'match_id=?',
+          whereArgs: [matchId],
+        );
+        for (final entry in options.entries) {
+          if (entry.value < 1 || entry.value > 3)
+            throw ArgumentError('Invalid attendance status');
+          await txn.insert('whatsapp_poll_options', {
+            'match_id': matchId,
+            'option_name': entry.key,
+            'status': entry.value,
+          });
+        }
+        await txn.update(
+          'whatsapp_attendance_state',
+          {'vote_at': null},
+          where: 'match_id=? AND manual_override=0',
+          whereArgs: [matchId],
+        );
+      });
+
+  Future<Map<String, Set<int>>> pollPlayerMappings(String groupId) async {
+    final rows = await _db.query(
+      'whatsapp_player_mappings',
+      where: 'group_id=?',
+      whereArgs: [groupId],
+    );
+    final mappings = <String, Set<int>>{};
+    for (final row in rows) {
+      mappings
+          .putIfAbsent(row['voter_id'] as String, () => <int>{})
+          .add(row['player_id'] as int);
+    }
+    return mappings;
+  }
+
+  Future<void> savePollPlayerMapping(
+    String groupId,
+    String voterId,
+    Set<int> playerIds,
+  ) => _db.transaction((txn) async {
+    await txn.delete(
+      'whatsapp_player_mappings',
+      where: 'group_id=? AND voter_id=?',
+      whereArgs: [groupId, voterId],
+    );
+    for (final playerId in playerIds) {
+      await txn.insert('whatsapp_player_mappings', {
+        'group_id': groupId,
+        'voter_id': voterId,
+        'player_id': playerId,
+      });
+    }
+    await txn.rawUpdate(
+      'UPDATE whatsapp_attendance_state SET vote_at=NULL WHERE manual_override=0 AND voter_id=? AND match_id IN (SELECT match_id FROM whatsapp_attendance_polls WHERE group_id=?)',
+      [voterId, groupId],
+    );
+  });
+
+  Future<void> clearPollManualOverrides(int matchId) async {
+    await _db.update(
+      'whatsapp_attendance_state',
+      {'manual_override': 0, 'vote_at': null},
+      where: 'match_id=?',
+      whereArgs: [matchId],
+    );
+  }
+
+  /// Applies only an explicitly configured poll and verified voter mappings.
+  Future<int> applyAttendancePoll(
+    WhatsAppPollSnapshot poll,
+  ) => _db.transaction((txn) async {
+    final links = await txn.query(
+      'whatsapp_attendance_polls',
+      where: 'group_id=? AND poll_id=?',
+      whereArgs: [poll.groupId, poll.id],
+      limit: 1,
+    );
+    if (links.isEmpty || poll.allowMultipleAnswers == null) return 0;
+    final matchId = links.single['match_id'] as int;
+    final matches = await txn.query(
+      'matches',
+      columns: ['done'],
+      where: 'id=?',
+      whereArgs: [matchId],
+      limit: 1,
+    );
+    if (matches.isEmpty || matches.single['done'] == 1) return 0;
+    final optionRows = await txn.query(
+      'whatsapp_poll_options',
+      where: 'match_id=?',
+      whereArgs: [matchId],
+    );
+    final options = {
+      for (final row in optionRows)
+        row['option_name'] as String: row['status'] as int,
+    };
+    if (poll.options.isEmpty ||
+        options.length != poll.options.length ||
+        poll.options.any((option) => !options.containsKey(option)))
+      return 0;
+    final mappings = await txn.query(
+      'whatsapp_player_mappings',
+      where: 'group_id=?',
+      whereArgs: [poll.groupId],
+    );
+    final players = <int, List<WhatsAppPollVote>>{};
+    for (final vote in poll.votes) {
+      if (vote.voterId.isEmpty ||
+          vote.updatedAt == null ||
+          vote.options.length > 1 ||
+          (vote.options.isNotEmpty &&
+              !options.containsKey(vote.options.single)))
+        continue;
+      for (final mapping in mappings.where(
+        (row) => row['voter_id'] == vote.voterId,
+      )) {
+        players.putIfAbsent(mapping['player_id'] as int, () => []).add(vote);
+      }
+    }
+    var changed = 0;
+    for (final entry in players.entries) {
+      if (entry.value.length != 1) continue;
+      final vote = entry.value.single;
+      final validPlayer = await txn.query(
+        'players',
+        columns: ['id'],
+        where: 'id=?',
+        whereArgs: [entry.key],
+        limit: 1,
+      );
+      if (validPlayer.isEmpty) continue;
+      final state = await txn.query(
+        'whatsapp_attendance_state',
+        where: 'match_id=? AND player_id=?',
+        whereArgs: [matchId, entry.key],
+        limit: 1,
+      );
+      if (state.isNotEmpty && state.single['manual_override'] == 1) continue;
+      final voteAt = vote.updatedAt!.toUtc().toIso8601String();
+      final previous = state.isEmpty ? null : state.single;
+      if (previous != null &&
+          previous['poll_id'] == poll.id &&
+          previous['voter_id'] == vote.voterId &&
+          (previous['vote_at'] as String? ?? '').compareTo(voteAt) >= 0)
+        continue;
+      final existing = await txn.query(
+        'attendance',
+        columns: ['status'],
+        where: 'match_id=? AND player_id=?',
+        whereArgs: [matchId, entry.key],
+        limit: 1,
+      );
+      final oldStatus = existing.isEmpty ? 0 : existing.single['status'] as int;
+      final newStatus = vote.options.isEmpty
+          ? 0
+          : options[vote.options.single]!;
+      if (oldStatus != newStatus) {
+        if (newStatus == 0) {
+          await txn.delete(
+            'attendance',
+            where: 'match_id=? AND player_id=?',
+            whereArgs: [matchId, entry.key],
+          );
+        } else {
+          await txn.insert('attendance', {
+            'match_id': matchId,
+            'player_id': entry.key,
+            'status': newStatus,
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        await txn.insert('whatsapp_attendance_audit', {
+          'match_id': matchId,
+          'player_id': entry.key,
+          'poll_id': poll.id,
+          'voter_id': vote.voterId,
+          'old_status': oldStatus,
+          'new_status': newStatus,
+          'vote_at': voteAt,
+        });
+        changed++;
+      }
+      await txn.insert('whatsapp_attendance_state', {
+        'match_id': matchId,
+        'player_id': entry.key,
+        'manual_override': 0,
+        'poll_id': poll.id,
+        'voter_id': vote.voterId,
+        'vote_at': voteAt,
+        'last_status': newStatus,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    return changed;
+  });
 
   Future<Map<int, ParticipationSummary>> participationByPlayer() async {
     final matchCountRows = await _db.rawQuery(
@@ -822,19 +1095,26 @@ class TeamStore {
   }
 
   Future<void> setAttendance(int matchId, int playerId, int status) async {
-    if (status == 0) {
-      await _db.delete(
-        'attendance',
-        where: 'match_id=? AND player_id=?',
-        whereArgs: [matchId, playerId],
-      );
-      return;
-    }
-    await _db.insert('attendance', {
-      'match_id': matchId,
-      'player_id': playerId,
-      'status': status,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.transaction((txn) async {
+      await txn.insert('whatsapp_attendance_state', {
+        'match_id': matchId,
+        'player_id': playerId,
+        'manual_override': 1,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      if (status == 0) {
+        await txn.delete(
+          'attendance',
+          where: 'match_id=? AND player_id=?',
+          whereArgs: [matchId, playerId],
+        );
+        return;
+      }
+      await txn.insert('attendance', {
+        'match_id': matchId,
+        'player_id': playerId,
+        'status': status,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    });
   }
 
   Future<List<Duty>> duties(int matchId) async => (await _db.query(

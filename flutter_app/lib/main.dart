@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
@@ -16,6 +17,8 @@ import 'data/team_backup.dart';
 import 'data/team_store.dart';
 import 'data/team_sync_service.dart';
 import 'data/whatsapp_message_writer.dart';
+import 'data/whatsapp_message_reader.dart';
+import 'data/whatsapp_message_reader_factory.dart';
 import 'widgets/android_whatsapp_spike.dart';
 import 'widgets/whatsapp_attendance_poll_card.dart';
 
@@ -211,6 +214,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
   int _seenCloudDataGeneration = 0;
   final Map<String, String> _savedDrafts = {};
   File? _savedDraftsFile;
+  StreamSubscription<Map<String, dynamic>>? _pollSubscription;
 
   @override
   void initState() {
@@ -218,6 +222,14 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     widget.syncService?.addListener(_onSyncServiceChanged);
     widget.syncService?.start();
+    if (Platform.isWindows || Platform.isAndroid) {
+      _pollSubscription = createWhatsAppMessageReader().events.listen(
+        _onWhatsAppEvent,
+        onError: (Object error) {
+          debugPrint('WhatsApp attendance listener error: $error');
+        },
+      );
+    }
     _loadSavedDrafts();
     refresh();
   }
@@ -236,6 +248,29 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
     }
     _seenCloudDataGeneration = service.dataGeneration;
     refresh();
+  }
+
+  Future<void> _onWhatsAppEvent(Map<String, dynamic> event) async {
+    if (widget.syncService?.isTeamOwner != true) return;
+    try {
+      final message = event['message'];
+      if (message is Map<String, dynamic> && message['kind'] == 'poll') {
+        final changed = await widget.store.applyAttendancePoll(
+          WhatsAppPollSnapshot.fromJson(message),
+        );
+        if (changed > 0 && mounted) setState(() {});
+      } else if (event['type'] == 'history_updated' ||
+          event['type'] == 'reader_ready') {
+        final polls = await createWhatsAppMessageReader().availablePolls();
+        var changed = 0;
+        for (final poll in polls) {
+          changed += await widget.store.applyAttendancePoll(poll);
+        }
+        if (changed > 0 && mounted) setState(() {});
+      }
+    } catch (error) {
+      debugPrint('Could not apply WhatsApp poll attendance: $error');
+    }
   }
 
   Future<void> _loadSavedDrafts() async {
@@ -273,6 +308,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _pollSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     widget.syncService?.removeListener(_onSyncServiceChanged);
     widget.syncService?.dispose();
@@ -2331,6 +2367,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
       final duties = snapshot.data![1] as List<Duty>;
       final coming = players.where((p) => attendance[p.id] == 1).length;
       final absent = players.where((p) => attendance[p.id] == 2).length;
+      final maybe = players.where((p) => attendance[p.id] == 3).length;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2404,7 +2441,7 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
           const SizedBox(height: 28),
           _section('Attendance', null, ''),
           Text(
-            '$coming coming | $absent absent | ${players.length - coming - absent} awaiting reply',
+            '$coming coming | $absent absent | $maybe maybe | ${players.length - coming - absent - maybe} awaiting reply',
             style: const TextStyle(color: Color(0xFF6F5B4A)),
           ),
           const SizedBox(height: 12),
@@ -2457,7 +2494,13 @@ class _TeamHomeState extends State<TeamHome> with WidgetsBindingObserver {
             ),
           if (!match.done && widget.syncService?.isTeamOwner == true) ...[
             const SizedBox(height: 12),
-            WhatsAppAttendancePollCard(store: widget.store, match: match),
+            WhatsAppAttendancePollCard(
+              store: widget.store,
+              match: match,
+              onAttendanceChanged: () {
+                if (mounted) setState(() {});
+              },
+            ),
           ],
           const SizedBox(height: 28),
           _section(

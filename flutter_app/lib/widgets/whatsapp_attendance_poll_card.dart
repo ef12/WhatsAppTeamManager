@@ -11,10 +11,12 @@ class WhatsAppAttendancePollCard extends StatefulWidget {
     super.key,
     required this.store,
     required this.match,
+    required this.onAttendanceChanged,
   });
 
   final TeamStore store;
   final TeamMatch match;
+  final VoidCallback onAttendanceChanged;
 
   @override
   State<WhatsAppAttendancePollCard> createState() =>
@@ -183,6 +185,195 @@ class _WhatsAppAttendancePollCardState
     if (mounted) setState(() => _status = 'Attendance poll unlinked.');
   }
 
+  Future<void> _configureAttendance() async {
+    final link = _link;
+    if (link == null) return;
+    try {
+      final polls = await createWhatsAppMessageReader().availablePolls();
+      final poll = polls
+          .where(
+            (item) => item.id == link.pollId && item.groupId == link.groupId,
+          )
+          .firstOrNull;
+      if (!mounted) return;
+      if (poll == null) {
+        setState(
+          () => _status = 'The linked poll is not available. Start the reader and select its WhatsApp group.',
+        );
+        return;
+      }
+      if (poll.allowMultipleAnswers == null) {
+        setState(
+          () => _status = 'The poll selection mode is unknown, so votes cannot be applied safely.',
+        );
+        return;
+      }
+      final players = await widget.store.players();
+      final options = await widget.store.pollOptionMappings(link.matchId);
+      final mappings = await widget.store.pollPlayerMappings(link.groupId);
+      if (!mounted) return;
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, update) => AlertDialog(
+            title: const Text('Set up attendance from poll'),
+            content: SizedBox(
+              width: 560,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Choose the attendance status for each answer:'),
+                    if (poll.allowMultipleAnswers == true)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          'This poll allows multiple answers. Only voters with exactly one selected answer will update attendance.',
+                        ),
+                      ),
+                    ...poll.options.map(
+                      (option) => DropdownButtonFormField<int>(
+                        initialValue: options[option],
+                        decoration: InputDecoration(labelText: option),
+                        items: const [
+                          DropdownMenuItem(value: 1, child: Text('Coming')),
+                          DropdownMenuItem(value: 2, child: Text('Absent')),
+                          DropdownMenuItem(value: 3, child: Text('Maybe')),
+                        ],
+                        onChanged: (value) => update(() {
+                          if (value != null) options[option] = value;
+                        }),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text('Select the players represented by each voter:'),
+                    if (poll.votes.isEmpty)
+                      const Text(
+                        'No voters are available yet. Return here after a vote is received.',
+                      ),
+                    ...poll.votes
+                        .where((vote) => vote.voterId.isNotEmpty)
+                        .map(
+                          (vote) => ExpansionTile(
+                            title: Text(vote.voter),
+                            subtitle: Text(
+                              vote.options.isEmpty
+                                  ? 'No current choice'
+                                  : vote.options.join(', '),
+                            ),
+                            children: players
+                                .map(
+                                  (player) => CheckboxListTile(
+                                    title: Text(player.name),
+                                    subtitle: player.parent.isNotEmpty
+                                        ? Text(player.parent)
+                                        : null,
+                                    value:
+                                        mappings[vote.voterId]?.contains(
+                                          player.id,
+                                        ) ??
+                                        false,
+                                    onChanged: (value) => update(() {
+                                      final selected = mappings.putIfAbsent(
+                                        vote.voterId,
+                                        () => <int>{},
+                                      );
+                                      if (value == true) {
+                                        selected.add(player.id);
+                                      } else {
+                                        selected.remove(player.id);
+                                      }
+                                    }),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: poll.options.every(options.containsKey)
+                    ? () => Navigator.pop(context, true)
+                    : null,
+                child: const Text('Save and apply votes'),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (saved != true || !mounted) return;
+      await widget.store.savePollOptionMappings(link.matchId, options);
+      for (final vote in poll.votes.where((vote) => vote.voterId.isNotEmpty)) {
+        await widget.store.savePollPlayerMapping(
+          link.groupId,
+          vote.voterId,
+          mappings[vote.voterId] ?? <int>{},
+        );
+      }
+      final changed = await widget.store.applyAttendancePoll(poll);
+      if (!mounted) return;
+      setState(
+        () => _status =
+            'Attendance configured. Updated $changed player(s); unmapped voters and manual overrides are left for review.',
+      );
+      widget.onAttendanceChanged();
+    } catch (error) {
+      if (mounted)
+        setState(() => _status = 'Could not configure attendance: $error');
+    }
+  }
+
+  Future<void> _reapplyPoll() async {
+    final link = _link;
+    if (link == null) return;
+    final polls = await createWhatsAppMessageReader().availablePolls();
+    final poll = polls
+        .where((item) => item.id == link.pollId && item.groupId == link.groupId)
+        .firstOrNull;
+    if (!mounted) return;
+    if (poll == null || poll.allowMultipleAnswers == null) {
+      setState(
+        () => _status = 'The linked poll is unavailable or its selection mode is unknown.',
+      );
+      return;
+    }
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reapply poll votes?'),
+        content: const Text(
+          'This clears manual attendance overrides for this match and reapplies available mapped poll votes.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reapply votes'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    await widget.store.clearPollManualOverrides(link.matchId);
+    final changed = await widget.store.applyAttendancePoll(poll);
+    if (!mounted) return;
+    setState(
+      () => _status = 'Reapplied poll votes: updated $changed player(s).',
+    );
+    widget.onAttendanceChanged();
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) return const LinearProgressIndicator();
@@ -225,6 +416,16 @@ class _WhatsAppAttendancePollCardState
                       : const Icon(Icons.poll_outlined),
                   label: Text(_link == null ? 'Link poll' : 'Change poll'),
                 ),
+                if (_link != null)
+                  FilledButton.tonal(
+                    onPressed: _configureAttendance,
+                    child: const Text('Map answers and voters'),
+                  ),
+                if (_link != null)
+                  TextButton(
+                    onPressed: _reapplyPoll,
+                    child: const Text('Reapply votes'),
+                  ),
                 if (_link != null)
                   TextButton(
                     onPressed: _unlinkPoll,

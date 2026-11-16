@@ -106,3 +106,15 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Ship the same reader used by the command-line prototype with the app, so
+# starting it from Settings does not depend on a source checkout or npm install.
+set(WHATSAPP_READER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../companion")
+find_program(WHATSAPP_NODE_EXECUTABLE NAMES node node.exe)
+if(NOT WHATSAPP_NODE_EXECUTABLE OR NOT EXISTS "${WHATSAPP_READER_DIR}/node_modules/whatsapp-web.js")
+  message(FATAL_ERROR "The WhatsApp reader requires Node.js and installed companion dependencies when building Windows.")
+endif()
+install(FILES "${WHATSAPP_NODE_EXECUTABLE}" DESTINATION "${CMAKE_INSTALL_PREFIX}/companion/runtime"
+  RENAME "node.exe" COMPONENT Runtime)
+install(DIRECTORY "${WHATSAPP_READER_DIR}/src" "${WHATSAPP_READER_DIR}/node_modules"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/companion" COMPONENT Runtime)

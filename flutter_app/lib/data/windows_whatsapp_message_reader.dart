@@ -22,6 +22,7 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
   final StreamController<Map<String, dynamic>> _eventController =
       StreamController<Map<String, dynamic>>.broadcast();
   Process? _companionProcess;
+  bool get isRunning => _companionProcess != null;
   Directory? _companionDirectory;
 
   String get _databasePath => path.join(_dataDirectory, 'messages.sqlite');
@@ -62,8 +63,9 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
       );
     }
     _companionDirectory = companion;
+    final bundledNode = File(path.join(companion.path, 'runtime', 'node.exe'));
     final process = await Process.start(
-      'node',
+      bundledNode.existsSync() ? bundledNode.path : 'node',
       ['src/reader.js'],
       workingDirectory: companion.path,
       environment: {
@@ -76,8 +78,10 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
     _forwardOutput(process.stdout);
     _forwardOutput(process.stderr, isError: true);
     process.exitCode.then((code) {
-      if (identical(_companionProcess, process)) _companionProcess = null;
-      _eventController.add({'type': 'companion_exit', 'code': code});
+      if (identical(_companionProcess, process)) {
+        _companionProcess = null;
+        _eventController.add({'type': 'companion_exit', 'code': code});
+      }
     });
     await _loadSelection();
   }
@@ -346,6 +350,7 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
       'kind': isPoll ? 'poll' : 'message',
       'text': isPoll ? poll['question'] ?? row['text'] : row['text'],
       if (isPoll) 'options': poll['options'] ?? const [],
+      if (isPoll) 'allowMultipleAnswers': poll['allowMultipleAnswers'],
       if (isPoll)
         'votes': voteRows.map((vote) {
           final selected =
@@ -382,7 +387,14 @@ class WindowsWhatsAppMessageReader implements WhatsAppMessageReader {
   @override
   Future<void> stop() async {
     final process = _companionProcess;
+    if (process == null) return;
     _companionProcess = null;
-    process?.kill(ProcessSignal.sigterm);
+    try {
+      process.stdin.writeln('stop');
+      await process.stdin.flush();
+      await process.exitCode.timeout(const Duration(seconds: 10));
+    } catch (_) {
+      process.kill(ProcessSignal.sigterm);
+    }
   }
 }

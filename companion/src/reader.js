@@ -5,6 +5,7 @@ const { stdin, stdout } = require('node:process');
 const { DatabaseSync } = require('node:sqlite');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const { groupId, groupName, listGroups } = require('./groups');
 const appMode = process.env.RKAVIC_APP_MODE === '1';
 
 function emitAppEvent(event) {
@@ -91,6 +92,16 @@ function pruneExpired() {
 }
 
 const rl = readline.createInterface({ input: stdin, output: stdout });
+if (appMode) {
+  rl.on('line', (line) => {
+    if (line.trim() === 'stop') {
+      shutdown().finally(() => process.exit(0));
+    }
+  });
+  rl.on('close', () => {
+    if (!stopped) shutdown().finally(() => process.exit(0));
+  });
+}
 const selectionPath = path.join(dataDirectory, 'selected-group.json');
 const selectionRequestPath = path.join(dataDirectory, 'selection-request.json');
 const groupsPath = path.join(dataDirectory, 'groups.json');
@@ -114,7 +125,7 @@ function writeJsonAtomic(filePath, value) {
 
 async function chooseGroup(groups) {
   const saved = savedSelection();
-  if (saved && groups.some((group) => group.id._serialized === saved.id)) {
+  if (saved && groups.some((group) => groupId(group) === saved.id)) {
     const answer = (await rl.question(`Capture only “${saved.name}”? [Y/n/select] `))
       .trim().toLowerCase();
     if (!answer || answer === 'y' || answer === 'yes') return saved;
@@ -122,7 +133,7 @@ async function chooseGroup(groups) {
   }
 
   console.log('\nGroups visible to the linked account:');
-  groups.forEach((group, index) => console.log(`${index + 1}. ${group.name}`));
+  groups.forEach((group, index) => console.log(`${index + 1}. ${groupName(group)}`));
   const answer = (await rl.question('Enter one group number, or q to stop: ')).trim();
   if (answer.toLowerCase() === 'q') return null;
   const index = Number(answer) - 1;
@@ -131,7 +142,7 @@ async function chooseGroup(groups) {
     return chooseGroup(groups);
   }
   const group = groups[index];
-  const selection = { id: group.id._serialized, name: group.name };
+  const selection = { id: groupId(group), name: groupName(group) };
   fs.writeFileSync(selectionPath, JSON.stringify(selection, null, 2));
   return selection;
 }
@@ -204,6 +215,41 @@ function captureVote(vote, groupId, voterName = null) {
   upsertVote.run(pollMessageId, vote.voter, displayName, JSON.stringify(vote.selectedOptions || []),
     new Date(vote.interractedAtTs || Date.now()).toISOString());
   return true;
+}
+
+function capturedSnapshot(messageId) {
+  const row = database.prepare('SELECT * FROM captured_messages WHERE message_id = ?').get(messageId);
+  if (!row) return null;
+  const isPoll = row.message_type === 'poll';
+  const poll = isPoll && row.poll_json ? JSON.parse(row.poll_json) : null;
+  const votes = isPoll ? database.prepare(
+    'SELECT voter_id, voter_name, selected_options, interacted_at FROM captured_poll_votes WHERE poll_message_id = ? ORDER BY interacted_at',
+  ).all(messageId).map((vote) => ({
+    voterId: vote.voter_id,
+    voter: vote.voter_name || vote.voter_id,
+    options: JSON.parse(vote.selected_options).map((option) => typeof option === 'string' ? option : option.name).filter(Boolean),
+    at: vote.interacted_at,
+  })) : [];
+  const reactions = database.prepare(
+    'SELECT sender_id, sender_name, emoji, reacted_at FROM captured_reactions WHERE message_id = ? ORDER BY reacted_at',
+  ).all(messageId).map((reaction) => ({
+    senderId: reaction.sender_id,
+    sender: reaction.sender_name || reaction.sender_id,
+    emoji: reaction.emoji,
+    at: reaction.reacted_at,
+  }));
+  return {
+    id: row.message_id, chat: row.group_id, senderId: row.sender_id,
+    sender: row.sender_id === 'me' ? 'you' : (row.sender_name || row.sender_id || 'member'),
+    timestamp: row.sent_at, kind: isPoll ? 'poll' : 'message',
+    text: isPoll ? poll?.question || row.text : row.text,
+    options: poll?.options || [], allowMultipleAnswers: poll?.allowMultipleAnswers, votes, reactions,
+  };
+}
+
+function emitSnapshot(messageId) {
+  const message = capturedSnapshot(messageId);
+  if (message) emitAppEvent({ type: 'reader_message', message });
 }
 
 const voterLabels = new Map();
@@ -328,8 +374,12 @@ async function cacheGroupHistory(selection) {
       await readMessageReactions(message, selection.id);
     }
     console.log(`Loaded ${history.length} recent message(s) for ${selection.name}.`);
+    emitAppEvent({ type: 'history_updated', groupId: selection.id });
   } catch (error) {
-    console.error(`Could not load recent messages for ${selection.name}: ${error.message || error}`);
+    if (!stopped) {
+      console.error(`Could not load recent messages for ${selection.name}: ${error.message || error}`);
+      emitAppEvent({ type: 'history_error', groupId: selection.id, message: error.message || String(error) });
+    }
   }
 }
 
@@ -410,27 +460,30 @@ async function main() {
   client.on('disconnected', (reason) => {
     console.error(`Disconnected: ${reason}`);
     emitAppEvent({ type: 'disconnected', reason: String(reason) });
+    if (appMode && !stopped) {
+      const fallback = setTimeout(() => process.exit(1), 5000);
+      fallback.unref();
+      shutdown().finally(() => process.exit(1));
+    }
   });
   client.on('ready', async () => {
     try {
       const chats = await client.getChats();
-      const groups = chats.filter((chat) => chat.isGroup);
-      writeJsonAtomic(groupsPath, groups.map((group) => ({
-        id: group.id._serialized,
-        name: group.name,
-      })).sort((left, right) => left.name.localeCompare(right.name)));
-      emitAppEvent({ type: 'groups_loaded', count: groups.length });
+      const groups = chats.filter((chat) => chat?.isGroup && groupId(chat));
+      const availableGroups = listGroups(groups);
+      writeJsonAtomic(groupsPath, availableGroups);
+      emitAppEvent({ type: 'groups_loaded', count: availableGroups.length });
       if (!groups.length) {
         console.log('No groups are available to this linked account.');
         return;
       }
       try {
         const request = JSON.parse(fs.readFileSync(selectionRequestPath, 'utf8'));
-        const requestedGroup = groups.find((group) => group.id._serialized === request.id);
+        const requestedGroup = groups.find((group) => groupId(group) === request.id);
         if (requestedGroup) {
           writeJsonAtomic(selectionPath, {
-            id: requestedGroup.id._serialized,
-            name: requestedGroup.name,
+            id: groupId(requestedGroup),
+            name: groupName(requestedGroup),
           });
         }
       } catch (_) { /* No pending app selection. */ }
@@ -438,7 +491,7 @@ async function main() {
       let readChoice;
       if (appMode) {
         const saved = savedSelection();
-        selection = saved && groups.some((group) => group.id._serialized === saved.id)
+        selection = saved && groups.some((group) => groupId(group) === saved.id)
           ? saved
           : null;
         readChoice = selection ? '1' : '';
@@ -526,7 +579,6 @@ async function main() {
         }
         console.log(`Displayed ${shown} available message(s); saved ${newlySaved} new message(s).`);
       }
-      if (appMode && selection) await cacheGroupHistory(selection);
       if (selection) console.log(`Listening only to ${selection.name}.`);
       else console.log('Connected. Select a group in the RKAVIC app to begin reading.');
       emitAppEvent({ type: 'reader_ready', selectedGroup: selection?.id || null });
@@ -540,9 +592,9 @@ async function main() {
         switchingGroup = true;
         try {
           const request = JSON.parse(fs.readFileSync(selectionRequestPath, 'utf8'));
-          const group = groups.find((candidate) => candidate.id._serialized === request.id);
-          if (!group || group.id._serialized === selection?.id) return;
-          selection = { id: group.id._serialized, name: group.name };
+          const group = groups.find((candidate) => groupId(candidate) === request.id);
+          if (!group || groupId(group) === selection?.id) return;
+          selection = { id: groupId(group), name: groupName(group) };
           writeJsonAtomic(selectionPath, selection);
           emitAppEvent({ type: 'group_selected', id: selection.id, name: selection.name });
           console.log(`App selected group: ${selection.name}`);
@@ -551,6 +603,12 @@ async function main() {
           console.error(`Could not switch selected group: ${error.message || error}`);
         } finally {
           switchingGroup = false;
+          try {
+            const pending = JSON.parse(fs.readFileSync(selectionRequestPath, 'utf8'));
+            if (pending.id !== selection?.id && groups.some((candidate) => groupId(candidate) === pending.id)) {
+              setImmediate(() => void applySelectionRequest());
+            }
+          } catch (_) { /* No valid pending selection. */ }
         }
       };
       fs.watchFile(selectionRequestPath, { interval: 750 }, (current, previous) => {
@@ -558,12 +616,13 @@ async function main() {
         void applySelectionRequest();
       });
       if (appMode) void applySelectionRequest();
-      client.on('message', async (message) => {
+      client.on('message_create', async (message) => {
         const activeSelection = selection;
         const chatId = message.fromMe ? message.to : message.from;
         if (!activeSelection || chatId !== activeSelection.id) return;
         const sender = await senderLabel(message);
         if (captureMessage(message, activeSelection.id, sender)) {
+          emitSnapshot(message.id._serialized);
           const sentAt = new Date(message.timestamp * 1000).toISOString();
           console.log(`[${sentAt}] ${sender}: ${displayMessage(message)}`);
         }
@@ -572,7 +631,15 @@ async function main() {
         const activeSelection = selection;
         if (!activeSelection) return;
         const name = vote.voter ? await voterLabel(vote.voter) : null;
+        const parent = vote.parentMessage;
+        const parentChat = parent && (parent.fromMe ? parent.to : parent.from);
+        if (parentChat === activeSelection.id && isPollMessage(parent)) {
+          captureMessage(parent, activeSelection.id, await senderLabel(parent));
+        }
         if (captureVote(vote, activeSelection.id, name)) {
+          const pollId = vote.parentMessage?.id?._serialized || vote.parentMessage?.id?.$1 ||
+            vote.parentMsgKey?._serialized || vote.parentMsgKey?.$1;
+          if (pollId) emitSnapshot(pollId);
           const choices = (vote.selectedOptions || []).map((option) => option.name).join(', ') || '(no options selected)';
           console.log(`[${new Date(vote.interractedAtTs || Date.now()).toISOString()}] Poll vote by ${name || 'Unknown participant'}: ${choices}`);
         }
@@ -589,6 +656,7 @@ async function main() {
           ? 'you'
           : await voterLabel(senderId);
         if (!captureReaction(messageId, activeSelection.id, senderId, reaction.reaction, reaction.timestamp, who)) return;
+        emitSnapshot(messageId);
         let target = `message ${messageId}`;
         try {
           const parentMessage = await client.getMessageById(messageId);
@@ -603,9 +671,11 @@ async function main() {
           console.log(`Reaction removed: ${who} from ${target}`);
         }
       });
+      if (appMode && selection) void cacheGroupHistory(selection);
       if (!appMode) await sendLoop(() => selection);
     } catch (error) {
       console.error(`Could not load groups: ${error.message}`);
+      emitAppEvent({ type: 'groups_error', message: error.message });
     }
   });
   emitAppEvent({ type: 'reader_starting' });

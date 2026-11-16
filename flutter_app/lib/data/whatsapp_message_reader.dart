@@ -76,6 +76,7 @@ class WhatsAppPollSnapshot {
     required this.createdAt,
     required this.options,
     required this.votes,
+    this.allowMultipleAnswers,
   });
 
   final String id;
@@ -84,6 +85,7 @@ class WhatsAppPollSnapshot {
   final DateTime? createdAt;
   final List<String> options;
   final List<WhatsAppPollVote> votes;
+  final bool? allowMultipleAnswers;
 
   factory WhatsAppPollSnapshot.fromJson(Map<String, dynamic> json) =>
       WhatsAppPollSnapshot(
@@ -98,6 +100,7 @@ class WhatsAppPollSnapshot {
             .whereType<Map<String, dynamic>>()
             .map(WhatsAppPollVote.fromJson)
             .toList(),
+        allowMultipleAnswers: json['allowMultipleAnswers'] as bool?,
       );
 }
 
@@ -151,14 +154,16 @@ class AndroidWhatsAppMessageReader
   static const _eventChannel = EventChannel(
     'nl.rkavic.manager/android_whatsapp_events',
   );
-
-  @override
-  Stream<Map<String, dynamic>> get events =>
-      _eventChannel.receiveBroadcastStream().map(
+  late final Stream<Map<String, dynamic>> _events = _eventChannel
+      .receiveBroadcastStream()
+      .map(
         (value) => value is String
             ? jsonDecode(value) as Map<String, dynamic>
             : Map<String, dynamic>.from(value as Map),
       );
+
+  @override
+  Stream<Map<String, dynamic>> get events => _events;
 
   @override
   Future<void> start() async {

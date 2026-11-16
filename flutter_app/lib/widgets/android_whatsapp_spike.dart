@@ -8,6 +8,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../data/whatsapp_message_reader.dart';
 import '../data/whatsapp_message_reader_factory.dart';
+import '../data/windows_whatsapp_message_reader.dart';
 
 class WhatsAppReaderCard extends StatefulWidget {
   const WhatsAppReaderCard({super.key});
@@ -57,7 +58,17 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
     if (_isAndroid) {
       _refreshNotificationAccess();
     } else {
-      _loadGroups();
+      _windowsReaderStarted =
+          (_reader as WindowsWhatsAppMessageReader).isRunning;
+      _loadGroupsInternal()
+          .then((_) {
+            if (mounted && _windowsReaderStarted && _selectedGroup != null) {
+              _readHistory('today');
+            }
+          })
+          .catchError(
+            (Object error) => _append('Could not load groups: $error'),
+          );
     }
   }
 
@@ -107,8 +118,19 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
       return;
     }
     if (type == 'groups_loaded') {
+      setState(() {
+        _pairingQr = null;
+        _status = 'WhatsApp linked; ${event['count']} group(s) loaded';
+      });
       _append('WhatsApp returned ${event['count']} joined group(s).');
       _loadGroupsInternal();
+      return;
+    }
+    if (type == 'groups_error') {
+      setState(() {
+        _pairingQr = null;
+        _status = 'Could not load WhatsApp groups: ${event['message']}';
+      });
       return;
     }
     if (type == 'reader_starting') {
@@ -134,6 +156,20 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
         _status = 'Reading ${event['name']}';
       });
       _append('Reader switched to ${event['name']}.');
+      return;
+    }
+    if (type == 'history_updated') {
+      if (event['groupId'] == _selectedGroup) {
+        _reader
+            .readToday()
+            .then((result) {
+              if (mounted && event['groupId'] == _selectedGroup)
+                _onEvent(result.json);
+            })
+            .catchError(
+              (Object error) => _append('Could not read messages: $error'),
+            );
+      }
       return;
     }
     if (type == 'companion_log' || type == 'companion_error') {
@@ -541,6 +577,18 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
                     : _pairingResult!,
               ),
           ],
+          if (!_isAndroid && _groups.isEmpty) ...[
+            const SizedBox(height: 14),
+            const Text('Select a WhatsApp group to read:'),
+            DropdownButtonFormField<String>(
+              decoration: const InputDecoration(
+                labelText: 'WhatsApp group',
+                helperText: 'Groups appear here after WhatsApp connects.',
+              ),
+              items: const [],
+              onChanged: null,
+            ),
+          ],
           if (_groups.isEmpty && _isAndroid && _notificationAccess) ...[
             const SizedBox(height: 12),
             const Text(
@@ -563,6 +611,7 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
               onChanged: (_) => setState(() {}),
             ),
             DropdownButtonFormField<String>(
+              decoration: const InputDecoration(labelText: 'WhatsApp group'),
               initialValue:
                   _visibleGroups.any((group) => group['id'] == _selectedGroup)
                   ? _selectedGroup
@@ -669,6 +718,12 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
     final dateLabel = timestamp == null
         ? ''
         : '${timestamp.day.toString().padLeft(2, '0')}/${timestamp.month.toString().padLeft(2, '0')} ${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    final poll = item['kind'] == 'poll'
+        ? WhatsAppPollSnapshot.fromJson(item)
+        : null;
+    final reactions = (item['reactions'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .toList();
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
@@ -682,6 +737,30 @@ class _WhatsAppReaderCardState extends State<WhatsAppReaderCard> {
             ),
             const SizedBox(height: 4),
             Text('${item['text'] ?? ''}'),
+            if (poll != null) ...[
+              const SizedBox(height: 6),
+              ...poll.options.map((option) => Text('• $option')),
+              const SizedBox(height: 6),
+              if (poll.votes.isEmpty)
+                const Text('No votes available yet')
+              else
+                ...poll.votes.map(
+                  (vote) => Text(
+                    '${vote.voter}: ${vote.options.isEmpty ? '(vote cleared)' : vote.options.join(', ')}',
+                  ),
+                ),
+            ],
+            if (reactions.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Text(
+                reactions
+                    .map(
+                      (reaction) =>
+                          '${reaction['emoji'] ?? ''} ${reaction['sender'] ?? 'Member'}',
+                    )
+                    .join('  '),
+              ),
+            ],
           ],
         ),
       ),
